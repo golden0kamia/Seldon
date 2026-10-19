@@ -20,6 +20,7 @@ lancer. La réponse à l'utilisateur est elle-même une action (`speak`).
 ## Installation
 
 ```bash
+git clone git@github.com:golden0kamia/Seldon.git && cd Seldon
 python3 -m venv .venv
 .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu   # évite ~3 Go de CUDA
 .venv/bin/pip install -e '.[all,dev]'
@@ -42,6 +43,11 @@ python -m seldon.tools.enroll Bastien   # enregistre une empreinte vocale
 pytest                              # tests (sans micro, caméra ni modèle)
 ```
 
+Commandes locales (traitées sans passer par le modèle, au clavier ou à la voix) :
+`exit` / `quitter`, `nouvelle` / `oublie tout`, `conversations [mots-clés]`,
+`reprendre N|mots-clés`, `supprimer N`, `actions`, `aide`. Le « / » initial
+est facultatif (obligatoire pour passer des arguments).
+
 ### Interface graphique (Qt 6)
 
 ```bash
@@ -49,22 +55,24 @@ pytest                              # tests (sans micro, caméra ni modèle)
 seldon-gui                          # ou : python -m seldon.gui [-c config.yaml] [dossier]
 ```
 
-- **Paramètres** : formulaire généré depuis `config.yaml` et les signatures des
-  plugins (moteurs disponibles, options connues avec leur valeur par défaut).
-  Les commentaires du fichier sont conservés à l'enregistrement.
-- **Fichiers** : arborescence (dossier Seldon, `data/`, `cwd` des actions,
-  dossiers récents), création, renommage, corbeille.
-- **Éditeur** : onglets, coloration (Python, YAML, JSON, Markdown, TOML, shell),
-  Ctrl+F / Ctrl+H, Ctrl+/ pour commenter ; un fichier modifié ailleurs
-  (par Seldon, Claude Code…) est rechargé automatiquement.
-- **Thème** : néomorphisme « cassette futurism », accent vert, en variante
-  claire ou sombre (Affichage › Thème, bouton ☾/☀ ou Ctrl+Maj+L ;
-  « Automatique » suit le thème du système). Couleurs dans `seldon/gui/theme.py`.
+Deux pages, choisies en haut de la fenêtre :
 
-Commandes locales (traitées sans passer par le modèle, au clavier ou à la voix) :
-`exit` / `quitter`, `nouvelle` / `oublie tout`, `conversations [mots-clés]`,
-`reprendre N|mots-clés`, `supprimer N`, `actions`, `aide`. Le « / » initial
-est facultatif (obligatoire pour passer des arguments).
+- **⚙ Paramètres** (Ctrl+1) : formulaire généré depuis `config.yaml` et les
+  signatures des plugins (moteurs disponibles, options connues avec leur valeur
+  par défaut). Les commentaires du fichier sont conservés à l'enregistrement.
+- **✎ Éditeur** (Ctrl+2) : arborescence des fichiers (dossier Seldon, `data/`,
+  `cwd` des actions, dossiers récents ; création, renommage, corbeille) et
+  éditeur à onglets, jamais vide (document « Sans titre » par défaut).
+  Coloration Python, YAML, JSON, Markdown, TOML, shell. Raccourcis : Ctrl+N
+  nouveau document, Ctrl+S / Ctrl+Maj+S enregistrer (sous), Ctrl+F / Ctrl+H
+  rechercher / remplacer, Ctrl+/ commenter. Un fichier modifié ailleurs (par
+  Seldon, Claude Code…) est rechargé automatiquement.
+
+Thème néomorphique « cassette futurism », accent vert, en variante claire ou
+sombre (Affichage › Thème, bouton ☾/☀ ou Ctrl+Maj+L ; « Automatique » suit le
+thème du système). Polices Share Tech et Share Tech Mono (Google Fonts, à
+installer sur le système ; IBM Plex à défaut). Couleurs et polices dans
+`seldon/gui/theme.py`.
 
 ### Mémoire des conversations
 
@@ -92,6 +100,7 @@ dangereuses (`rm -rf /`, `mkfs`…) sont toujours refusées. Voir `config.yaml`.
 | `seldon/actions/` | Outils du cerveau | `Action.run(params, ctx) -> ActionResult` |
 | `seldon/tts/` | Texte → parole | `TTSEngine.speak(text)` |
 | `seldon/core/` | Pipeline, registre de plugins, bus d'événements | |
+| `seldon/gui/` | Interface Qt 6 (paramètres, fichiers, éditeur, thème) | lit les plugins par AST, sans les importer |
 
 ### Ajouter une action
 

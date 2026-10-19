@@ -130,8 +130,9 @@ def _write_icons() -> Path:
 
 FIELD_PAD = 10   # marge intérieure gauche/droite des champs, en px
 
-UI_FAMILIES = ["IBM Plex Sans Condensed", "IBM Plex Sans", "DejaVu Sans Condensed", "Sans Serif"]
-MONO_FAMILIES = ["IBM Plex Mono", "DM Mono", "DejaVu Sans Mono", "Monospace"]
+# Share Tech pour l'interface, Share Tech Mono pour le code, les valeurs et la signalétique
+UI_FAMILIES = ["Share Tech", "IBM Plex Sans Condensed", "DejaVu Sans Condensed", "Sans Serif"]
+MONO_FAMILIES = ["Share Tech Mono", "IBM Plex Mono", "DejaVu Sans Mono", "Monospace"]
 
 
 def _family(candidates: list[str]) -> str:
@@ -139,14 +140,14 @@ def _family(candidates: list[str]) -> str:
     return next((f for f in candidates if f in available), candidates[-1])
 
 
-def ui_font(size: float = 10.5, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
+def ui_font(size: float = 11.5, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
     f = QFont(_family(UI_FAMILIES))
     f.setPointSizeF(size)
     f.setWeight(weight)
     return f
 
 
-def mono_font(size: float = 10.5) -> QFont:
+def mono_font(size: float = 11) -> QFont:
     f = QFont(_family(MONO_FAMILIES))
     f.setPointSizeF(size)
     f.setStyleHint(QFont.StyleHint.Monospace)
@@ -156,7 +157,6 @@ def mono_font(size: float = 10.5) -> QFont:
 def label_font(size: float = 9.0) -> QFont:
     """Petites capitales espacées, façon sérigraphie d'appareil."""
     f = mono_font(size)
-    f.setWeight(QFont.Weight.Medium)
     f.setCapitalization(QFont.Capitalization.AllUppercase)
     f.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 112)
     return f
@@ -191,11 +191,11 @@ QToolTip {{ background: {CRT_BG}; color: {CRT_FG}; border: 1px solid {ACCENT_LO}
             font-family: "{mono}"; border-radius: 6px; }}
 
 /* boutons : touches d'appareil en relief */
-QPushButton {{ {_raised()} border-radius: 12px; padding: 7px 18px; min-height: 18px; font-weight: 500; }}
+QPushButton {{ {_raised()} border-radius: 12px; padding: 7px 18px; min-height: 18px; }}
 QPushButton:hover {{ color: {ACCENT_TEXT}; }}
 QPushButton:pressed {{ {_inset()} padding-top: 8px; padding-bottom: 6px; }}
 QPushButton:disabled {{ color: {MUTED}; background: {BG}; border-color: {BG}; }}
-QPushButton#primary {{ color: white; font-weight: 600;
+QPushButton#primary {{ color: white;
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {ACCENT_HI}, stop:1 {ACCENT});
     border: 1px solid {ACCENT}; border-top-color: #8de6ac; border-left-color: #8de6ac;
     border-bottom-color: {ACCENT_LO}; border-right-color: {ACCENT_LO}; }}
@@ -205,6 +205,9 @@ QPushButton#primary:disabled {{ color: {MUTED}; background: {BG}; border-color: 
 QToolButton {{ {_raised()} border-radius: 10px; padding: 3px; min-width: 20px; min-height: 20px; }}
 QToolButton:hover {{ color: {ACCENT_TEXT}; }}
 QToolButton:pressed, QToolButton:checked {{ {_inset()} color: {ACCENT_TEXT}; }}
+QToolButton#mode {{ font-family: "{mono}"; font-size: 10pt; padding: 6px 16px; border-radius: 13px; color: {MUTED}; }}
+QToolButton#mode:hover {{ color: {TEXT}; }}
+QToolButton#mode:checked {{ {_inset()} color: {ACCENT_TEXT}; }}
 QToolButton[autoRaise="true"] {{ background: transparent; border: none; color: {MUTED}; }}
 QToolButton[autoRaise="true"]:hover {{ color: {WARN}; }}
 
@@ -235,16 +238,16 @@ QTabWidget::pane {{ border: none; }}
 QTabBar {{ qproperty-drawBase: 0; }}
 QTabBar::tab {{ {_raised()} border-radius: 11px; padding: 6px 14px; margin: 6px 4px 8px 4px; color: {MUTED}; }}
 QTabBar::tab:hover {{ color: {TEXT}; }}
-QTabBar::tab:selected {{ {_inset()} color: {ACCENT_TEXT}; font-weight: 600; }}
+QTabBar::tab:selected {{ {_inset()} color: {ACCENT_TEXT}; }}
 QTabBar::close-button {{ image: {icon("close")}; subcontrol-position: right; margin-left: 6px; }}
 QTabBar::close-button:hover {{ image: {icon("close-hover")}; }}
 
 /* listes et arborescence posées dans des cartes */
-QListWidget, QTreeView {{ background: transparent; border: none; font-size: 10.5pt;
+QListWidget, QTreeView {{ background: transparent; border: none; font-size: 11.5pt;
     show-decoration-selected: 0; }}
 QListWidget::item {{ padding: 8px 12px; margin: 3px 2px; border-radius: 10px; border-left: 3px solid transparent; }}
 QListWidget::item:hover {{ color: {ACCENT_TEXT}; }}
-QListWidget::item:selected {{ {_inset()} color: {ACCENT_TEXT}; font-weight: 600; border-left: 3px solid {ACCENT}; }}
+QListWidget::item:selected {{ {_inset()} color: {ACCENT_TEXT}; border-left: 3px solid {ACCENT}; }}
 QTreeView::item {{ padding: 3px 2px; border-radius: 6px; }}
 QTreeView::item:hover {{ background: {BG_HI}; }}
 QTreeView::item:selected {{ background: {SELECT_BG}; color: {ACCENT_TEXT}; }}
@@ -502,6 +505,7 @@ class Masthead(QWidget):
     """Bandeau supérieur : nom de l'appareil, bandes de cassette, voyant d'état et bascule clair/sombre."""
 
     toggle_variant = Signal()
+    mode_changed = Signal(int)   # 0 = paramètres, 1 = éditeur
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -513,6 +517,16 @@ class Masthead(QWidget):
         model = caption("Assistant vocal · console de configuration · mk-1")
         self.led = Led(12)
         self.state = caption("prêt")
+        self.mode_buttons: list[QToolButton] = []
+        modes = QHBoxLayout()
+        modes.setSpacing(6)
+        for i, (text, tip) in enumerate((("⚙  PARAMÈTRES", "Réglages de config.yaml (Ctrl+1)"),
+                                        ("✎  ÉDITEUR", "Fichiers et éditeur de texte (Ctrl+2)"))):
+            b = QToolButton(text=text, toolTip=tip, checkable=True, autoExclusive=True, objectName="mode")
+            b.clicked.connect(lambda _=False, i=i: self.mode_changed.emit(i))
+            modes.addWidget(b)
+            self.mode_buttons.append(b)
+        self.mode_buttons[0].setChecked(True)
         self.variant_btn = QToolButton(toolTip="Basculer clair / sombre (Ctrl+Maj+L)")
         self.variant_btn.setFont(ui_font(11))
         self.variant_btn.clicked.connect(self.toggle_variant.emit)
@@ -524,11 +538,16 @@ class Masthead(QWidget):
         lay.addWidget(Stripes())
         lay.addWidget(model)
         lay.addStretch(1)
+        lay.addLayout(modes)
+        lay.addStretch(1)
         lay.addWidget(self.led)
         lay.addWidget(self.state)
         lay.addSpacing(10)
         lay.addWidget(self.variant_btn)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+
+    def set_mode(self, index: int) -> None:
+        self.mode_buttons[index].setChecked(True)
 
     def set_state(self, text: str, color: str | None) -> None:
         self.state.setText(text)

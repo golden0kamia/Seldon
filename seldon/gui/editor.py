@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Callable
 
 from PySide6.QtCore import QFileSystemWatcher, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (
@@ -11,7 +12,7 @@ from PySide6.QtGui import (
     QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextDocument, QTextFormat,
 )
 from PySide6.QtWidgets import (
-    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
+    QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
     QTabWidget, QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -184,19 +185,26 @@ class CodeEditor(QPlainTextEdit):
     def __init__(self, language: str = "text", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("code")
-        self.setFont(theme.mono_font(10.5))
+        self.setFont(theme.mono_font(11.5))
         self.setFrameShape(QPlainTextEdit.Shape.NoFrame)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.indent = "  " if language in ("yaml", "json") else "    "
-        self.setTabStopDistance(self.fontMetrics().horizontalAdvance(" ") * len(self.indent))
-        self.language = language
-        self.highlighter = Highlighter(self.document(), language)
+        self.highlighter: Highlighter | None = None
+        self.set_language(language)
         self.gutter = LineNumbers(self)
         self.blockCountChanged.connect(lambda _: self.setViewportMargins(self.gutter_width(), 0, 0, 0))
         self.updateRequest.connect(self._update_gutter)
         self.cursorPositionChanged.connect(self._highlight_line)
         self.setViewportMargins(self.gutter_width(), 0, 0, 0)
         self._highlight_line()
+
+    def set_language(self, language: str) -> None:
+        """Change la coloration et l'indentation (ex. après « Enregistrer sous »)."""
+        self.language = language
+        self.indent = "  " if language in ("yaml", "json") else "    "
+        self.setTabStopDistance(self.fontMetrics().horizontalAdvance(" ") * len(self.indent))
+        if self.highlighter is not None:
+            self.highlighter.setDocument(None)
+        self.highlighter = Highlighter(self.document(), language)
 
     def theme_changed(self) -> None:
         self._highlight_line()
@@ -425,10 +433,13 @@ class FindBar(QWidget):
 
 # --- onglets -----------------------------------------------------------------
 
-class FileTab(QWidget):
-    """Un fichier ouvert : éditeur (ou aperçu d'image) + état d'enregistrement."""
+UNTITLED = "Sans titre"
 
-    def __init__(self, path: Path, parent: QWidget | None = None) -> None:
+
+class FileTab(QWidget):
+    """Un fichier ouvert (ou un document « Sans titre », ``path=None``) : éditeur ou aperçu d'image."""
+
+    def __init__(self, path: Path | None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.path = path
         self.editor: CodeEditor | None = None
@@ -437,7 +448,7 @@ class FileTab(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         screen = theme.NeuCard("screen", radius=20, padding=16)
         lay.addWidget(screen)
-        if path.suffix.lower() in IMAGE_SUFFIXES:
+        if path is not None and path.suffix.lower() in IMAGE_SUFFIXES:
             label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
             pix = QPixmap(str(path))
             label.setPixmap(pix) if not pix.isNull() else label.setText("Image illisible")
@@ -445,11 +456,20 @@ class FileTab(QWidget):
             area.setWidget(label)
             screen.add(area, 1)
             return
-        self.editor = CodeEditor(language_of(path))
-        self.editor.setPlainText(self.read())
+        self.editor = CodeEditor(language_of(path) if path else "text")
+        self.editor.setPlainText(self.read() if path else "")
         self.saved_text = self.editor.toPlainText()
         self.editor.document().setModified(False)
         screen.add(self.editor, 1)
+
+    @property
+    def title(self) -> str:
+        return self.path.name if self.path else UNTITLED
+
+    @property
+    def pristine(self) -> bool:
+        """Document « Sans titre » vide et intact : remplaçable sans rien perdre."""
+        return self.path is None and self.editor is not None and not self.modified and not self.editor.toPlainText()
 
     def read(self) -> str:
         data = self.path.read_bytes()
@@ -462,7 +482,7 @@ class FileTab(QWidget):
         return bool(self.editor and self.editor.document().isModified())
 
     def save(self) -> None:
-        if self.editor is None:
+        if self.editor is None or self.path is None:
             return
         text = self.editor.toPlainText()
         self.path.write_text(text, encoding="utf-8")
@@ -470,7 +490,7 @@ class FileTab(QWidget):
         self.editor.document().setModified(False)
 
     def reload(self) -> None:
-        if self.editor is None:
+        if self.editor is None or self.path is None:
             return
         text = self.read()
         if text == self.editor.toPlainText():
@@ -492,6 +512,8 @@ class EditorTabs(QWidget):
 
     saved = Signal(Path)
     current_changed = Signal()
+    opened = Signal()           # un document vient d'être ouvert ou créé
+
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -506,6 +528,7 @@ class EditorTabs(QWidget):
         self.tabs.currentChanged.connect(lambda _: self.current_changed.emit())
         self.watcher = QFileSystemWatcher(self)
         self.watcher.fileChanged.connect(self._external_change)
+        self.default_dir: Callable[[], Path] = Path.cwd   # dossier proposé par « Enregistrer sous »
 
     # accès
     def file_tabs(self) -> list[FileTab]:
@@ -517,13 +540,7 @@ class EditorTabs(QWidget):
 
     def find_tab(self, path: Path) -> FileTab | None:
         path = path.resolve()
-        return next((t for t in self.file_tabs() if t.path == path), None)
-
-    def add_fixed(self, widget: QWidget, title: str) -> None:
-        """Onglet permanent (ex. paramètres), sans bouton de fermeture."""
-        i = self.tabs.insertTab(0, widget, title)
-        self.tabs.tabBar().setTabButton(i, self.tabs.tabBar().ButtonPosition.RightSide, None)
-        self.tabs.tabBar().setTabButton(i, self.tabs.tabBar().ButtonPosition.LeftSide, None)
+        return next((t for t in self.file_tabs() if t.path is not None and t.path == path), None)
 
     # ouverture / fermeture
     def open_file(self, path: Path) -> FileTab | None:
@@ -541,21 +558,45 @@ class EditorTabs(QWidget):
         except (OSError, ValueError) as e:
             QMessageBox.warning(self, "Ouverture impossible", f"{path.name} : {e}")
             return None
-        i = self.tabs.addTab(tab, path.name)
-        self.tabs.setTabToolTip(i, str(path))
+        # un « Sans titre » vide laisse sa place au fichier ouvert
+        scratch = [t for t in self.file_tabs() if t.pristine]
+        self._add_tab(tab)
+        for t in scratch:
+            self._drop(t)
+        self.watcher.addPath(str(path))
+        return tab
+
+    def new_document(self) -> FileTab:
+        tab = FileTab(None)
+        self._add_tab(tab)
+        return tab
+
+    def ensure_document(self) -> None:
+        """L'éditeur n'est jamais vide : sans onglet, on ouvre un « Sans titre »."""
+        if self.tabs.count() == 0:
+            self.new_document()
+
+    def _add_tab(self, tab: FileTab) -> None:
+        i = self.tabs.addTab(tab, tab.title)
         self.tabs.setCurrentIndex(i)
+        self._refresh_title(tab)
         if tab.editor:
             tab.editor.modificationChanged.connect(lambda _m, t=tab: self._refresh_title(t))
             tab.editor.cursorPositionChanged.connect(self.current_changed.emit)
             tab.editor.setFocus()
-        self.watcher.addPath(str(path))
-        return tab
+        self.opened.emit()
+
+    def _drop(self, tab: FileTab) -> None:
+        if tab.path is not None:
+            self.watcher.removePath(str(tab.path))
+        self.tabs.removeTab(self.tabs.indexOf(tab))
+        tab.deleteLater()
 
     def _refresh_title(self, tab: FileTab) -> None:
         i = self.tabs.indexOf(tab)
         if i >= 0:
-            self.tabs.setTabText(i, ("● " if tab.modified else "") + tab.path.name)
-            self.tabs.setTabToolTip(i, str(tab.path))
+            self.tabs.setTabText(i, ("● " if tab.modified else "") + tab.title)
+            self.tabs.setTabToolTip(i, str(tab.path) if tab.path else "Pas encore enregistré (Ctrl+S pour choisir où)")
         self.current_changed.emit()
 
     def close_tab(self, index: int) -> bool:
@@ -565,16 +606,15 @@ class EditorTabs(QWidget):
         if tab.modified:
             self.tabs.setCurrentIndex(index)
             answer = QMessageBox.question(
-                self, "Modifications non enregistrées", f"Enregistrer {tab.path.name} avant de fermer ?",
+                self, "Modifications non enregistrées", f"Enregistrer {tab.title} avant de fermer ?",
                 QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
             )
             if answer == QMessageBox.StandardButton.Cancel:
                 return False
             if answer == QMessageBox.StandardButton.Save and not self.save(tab):
                 return False
-        self.watcher.removePath(str(tab.path))
-        self.tabs.removeTab(index)
-        tab.deleteLater()
+        self._drop(tab)
+        self.ensure_document()
         return True
 
     def close_current(self) -> None:
@@ -586,7 +626,7 @@ class EditorTabs(QWidget):
         dirty = [t for t in self.file_tabs() if t.modified]
         if not dirty:
             return True
-        names = "\n".join(f"• {t.path.name}" for t in dirty)
+        names = "\n".join(f"• {t.title}" for t in dirty)
         answer = QMessageBox.question(
             self, "Modifications non enregistrées", f"Enregistrer les fichiers modifiés ?\n\n{names}",
             QMessageBox.StandardButton.SaveAll | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
@@ -602,6 +642,8 @@ class EditorTabs(QWidget):
         tab = tab or self.current()
         if tab is None or tab.editor is None:
             return False
+        if tab.path is None:
+            return self.save_as(tab)
         try:
             tab.save()
         except OSError as e:
@@ -609,6 +651,23 @@ class EditorTabs(QWidget):
             return False
         self._refresh_title(tab)
         self.saved.emit(tab.path)
+        return True
+
+    def save_as(self, tab: FileTab | None = None) -> bool:
+        tab = tab or self.current()
+        if tab is None or tab.editor is None:
+            return False
+        start = tab.path or (self.default_dir() / "nouveau.txt")
+        name, _ = QFileDialog.getSaveFileName(self, "Enregistrer sous", str(start))
+        if not name:
+            return False
+        if tab.path is not None:
+            self.watcher.removePath(str(tab.path))
+        tab.path = Path(name).resolve()
+        tab.editor.set_language(language_of(tab.path))
+        if not self.save(tab):
+            return False
+        self.watcher.addPath(str(tab.path))
         return True
 
     def save_all(self) -> None:
@@ -655,7 +714,7 @@ class EditorTabs(QWidget):
         """Renommage depuis l'arborescence : met à jour les onglets concernés."""
         old, new = old.resolve(), new.resolve()
         for tab in self.file_tabs():
-            if tab.path == old or old in tab.path.parents:
+            if tab.path is not None and (tab.path == old or old in tab.path.parents):
                 self.watcher.removePath(str(tab.path))
                 tab.path = new / tab.path.relative_to(old) if tab.path != old else new
                 self.watcher.addPath(str(tab.path))
@@ -664,14 +723,12 @@ class EditorTabs(QWidget):
     def path_deleted(self, path: Path) -> None:
         path = path.resolve()
         for tab in self.file_tabs():
-            if tab.path == path or path in tab.path.parents:
+            if tab.path is not None and (tab.path == path or path in tab.path.parents):
                 if not tab.modified:
-                    self.watcher.removePath(str(tab.path))
-                    i = self.tabs.indexOf(tab)
-                    self.tabs.removeTab(i)
-                    tab.deleteLater()
+                    self._drop(tab)
                 else:
                     tab.editor.document().setModified(True)
+        self.ensure_document()
 
     # recherche
     def show_find(self, replace: bool = False) -> None:
@@ -687,8 +744,10 @@ class EditorTabs(QWidget):
             return a
 
         return {
+            "new": act("&Nouveau document", QKeySequence.StandardKey.New, self.new_document),
             "save": act("&Enregistrer", QKeySequence.StandardKey.Save, lambda: self.save()),
-            "save_all": act("Enregistrer &tout", "Ctrl+Shift+S", self.save_all),
+            "save_as": act("Enregistrer &sous…", "Ctrl+Shift+S", lambda: self.save_as()),
+            "save_all": act("Enregistrer &tout", "Ctrl+Alt+S", self.save_all),
             "close": act("&Fermer l'onglet", QKeySequence.StandardKey.Close, self.close_current),
             "find": act("&Rechercher", QKeySequence.StandardKey.Find, lambda: self.show_find()),
             "replace": act("Re&mplacer", "Ctrl+H", lambda: self.show_find(True)),

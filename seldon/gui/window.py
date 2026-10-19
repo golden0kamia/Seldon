@@ -1,4 +1,4 @@
-"""Fenêtre principale : arborescence à gauche, paramètres et fichiers en onglets à droite."""
+"""Fenêtre principale : deux pages, Paramètres et Éditeur (arborescence + fichiers en onglets)."""
 
 from __future__ import annotations
 
@@ -6,16 +6,17 @@ from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QSettings, Qt
 from PySide6.QtGui import QAction, QActionGroup, QGuiApplication, QKeySequence
-from PySide6.QtWidgets import QApplication, QFileDialog, QLabel, QMainWindow, QSplitter, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication, QFileDialog, QLabel, QMainWindow, QSplitter, QStackedWidget, QVBoxLayout, QWidget,
+)
 
 from seldon.gui import theme
-
 from seldon.gui.editor import EditorTabs, FileTab
 from seldon.gui.files import FileBrowser
 from seldon.gui.settings import SettingsPanel
 
-SETTINGS_TITLE = "⚙ Paramètres"
 THEMES = [("auto", "Automatique (système)"), ("light", "Clair"), ("dark", "Sombre")]
+SETTINGS_PAGE, EDITOR_PAGE = 0, 1
 
 
 def project_roots(project: Path, doc) -> list[tuple[str, Path]]:
@@ -44,9 +45,8 @@ class MainWindow(QMainWindow):
 
         self.files = FileBrowser()
         self.editors = EditorTabs()
+        self.editors.default_dir = lambda: self.files.root or self.project
         self.settings = SettingsPanel(self.config_path)
-        self.editors.add_fixed(self.settings, SETTINGS_TITLE)
-        self.editors.tabs.setCurrentIndex(0)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self.files)
@@ -54,25 +54,30 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([300, 1000])
         self.splitter = splitter
+        self.pages = QStackedWidget()
+        self.pages.addWidget(self.settings)   # SETTINGS_PAGE
+        self.pages.addWidget(splitter)        # EDITOR_PAGE
         self.masthead = theme.Masthead()
         central = QWidget(objectName="central")
         lay = QVBoxLayout(central)
         lay.setContentsMargins(8, 0, 8, 0)
         lay.setSpacing(0)
         lay.addWidget(self.masthead)
-        lay.addWidget(splitter, 1)
+        lay.addWidget(self.pages, 1)
         self.setCentralWidget(central)
 
         self.position = QLabel()
         self.statusBar().addPermanentWidget(self.position)
 
+        self.masthead.mode_changed.connect(self.show_page)
         self.files.open_requested.connect(self.open_path)
         self.files.moved.connect(self.editors.path_moved)
         self.files.deleted.connect(self.editors.path_deleted)
         self.files.root_changed.connect(lambda p: self.statusBar().showMessage(str(p), 3000))
         self.settings.open_requested.connect(self.open_path)
         self.settings.saved.connect(self._settings_saved)
-        self.settings.dirty_changed.connect(self._settings_dirty)
+        self.settings.dirty_changed.connect(lambda _d: self._update_status())
+        self.editors.opened.connect(lambda: self.show_page(EDITOR_PAGE))
         self.editors.current_changed.connect(self._update_status)
         self.editors.saved.connect(lambda p: self.statusBar().showMessage(f"Enregistré : {p}", 3000))
 
@@ -93,10 +98,11 @@ class MainWindow(QMainWindow):
             return a
 
         file_menu = self.menuBar().addMenu("&Fichier")
+        file_menu.addAction(ed["new"])
         file_menu.addAction(act("&Ouvrir un fichier…", self.choose_file, QKeySequence.StandardKey.Open))
         file_menu.addAction(act("Ouvrir un &dossier…", self.files.choose_root, "Ctrl+Shift+O"))
         file_menu.addSeparator()
-        for key in ("save", "save_all", "close"):
+        for key in ("save", "save_as", "save_all", "close"):
             file_menu.addAction(ed[key])
         file_menu.addSeparator()
         file_menu.addAction(act("&Quitter", self.close, QKeySequence.StandardKey.Quit))
@@ -107,7 +113,9 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(act("Commenter / décommenter", self._toggle_comment, "Ctrl+/"))
 
         view = self.menuBar().addMenu("&Affichage")
-        view.addAction(act(SETTINGS_TITLE, lambda: self.editors.tabs.setCurrentWidget(self.settings), "Ctrl+,"))
+        view.addAction(act("⚙ Paramètres", lambda: self.show_page(SETTINGS_PAGE), "Ctrl+1"))
+        view.addAction(act("✎ Éditeur", lambda: self.show_page(EDITOR_PAGE), "Ctrl+2"))
+        view.addSeparator()
         self.show_hidden = act("Afficher les fichiers cachés", self.files.set_show_hidden)
         self.show_hidden.setCheckable(True)
         view.addAction(self.show_hidden)
@@ -132,6 +140,16 @@ class MainWindow(QMainWindow):
         if hasattr(hints, "colorSchemeChanged"):
             hints.colorSchemeChanged.connect(lambda _s: self.theme_mode == "auto" and self.set_theme("auto"))
 
+    # --- pages --------------------------------------------------------------
+    def show_page(self, index: int) -> None:
+        self.pages.setCurrentIndex(index)
+        self.masthead.set_mode(index)
+        if index == EDITOR_PAGE:
+            self.editors.ensure_document()
+            if (tab := self.editors.current()) and tab.editor:
+                tab.editor.setFocus()
+        self._update_status()
+
     # --- thème ----------------------------------------------------------------
     def set_theme(self, mode: str) -> None:
         """``auto`` suit le système ; ``light`` / ``dark`` forcent la variante."""
@@ -152,7 +170,8 @@ class MainWindow(QMainWindow):
 
     def _reveal_current(self) -> None:
         tab = self.editors.current()
-        if tab:
+        if tab and tab.path:
+            self.show_page(EDITOR_PAGE)
             if self.files.root is None or self.files.root not in tab.path.parents:
                 self.files.set_root(tab.path.parent)
             self.files.reveal(tab.path)
@@ -160,6 +179,7 @@ class MainWindow(QMainWindow):
     # --- actions ------------------------------------------------------------
     def open_path(self, path: Path) -> None:
         self.editors.open_file(path)
+        self.show_page(EDITOR_PAGE)
 
     def choose_file(self) -> None:
         start = str(self.files.root or self.project)
@@ -168,7 +188,7 @@ class MainWindow(QMainWindow):
             self.open_path(Path(p))
 
     def save_current(self) -> None:
-        if self.editors.tabs.currentWidget() is self.settings:
+        if self.pages.currentIndex() == SETTINGS_PAGE:
             self.settings.save()
         else:
             self.editors.save()
@@ -178,11 +198,6 @@ class MainWindow(QMainWindow):
         self.editors.reload_path(path)
         self.files.set_roots(project_roots(self.project, self.settings.doc), self.files.recent)
 
-    def _settings_dirty(self, dirty: bool) -> None:
-        i = self.editors.tabs.indexOf(self.settings)
-        self.editors.tabs.setTabText(i, ("● " if dirty else "") + SETTINGS_TITLE)
-        self._update_status()
-
     def _update_status(self) -> None:
         pending = self.settings.dirty + sum(t.modified for t in self.editors.file_tabs())
         if pending:
@@ -190,13 +205,13 @@ class MainWindow(QMainWindow):
         else:
             self.masthead.set_state("prêt", theme.ACCENT_HI)
         tab = self.editors.current()
-        if isinstance(tab, FileTab) and tab.editor:
+        if self.pages.currentIndex() == EDITOR_PAGE and isinstance(tab, FileTab) and tab.editor:
             c = tab.editor.textCursor()
             self.position.setText(f"{tab.editor.language.upper()}  ·  LN {c.blockNumber() + 1:>4}  COL {c.positionInBlock() + 1:>3}")
-            self.setWindowTitle(f"{tab.path.name} — Seldon")
+            self.setWindowTitle(f"{tab.title} — Seldon")
         else:
             self.position.setText("")
-            self.setWindowTitle("Seldon")
+            self.setWindowTitle("Paramètres — Seldon" if self.pages.currentIndex() == SETTINGS_PAGE else "Seldon")
 
     # --- persistance --------------------------------------------------------
     def _restore(self, root: Path | None) -> None:
@@ -220,7 +235,8 @@ class MainWindow(QMainWindow):
         for p in self.store.value("open_files") or []:
             if p and Path(p).is_file():
                 self.editors.open_file(Path(p))
-        self.editors.tabs.setCurrentIndex(0)
+        self.editors.ensure_document()
+        self.show_page(int(self.store.value("page", SETTINGS_PAGE, type=int)) % 2)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if not self.settings.confirm_close() or not self.editors.confirm_close_all():
@@ -231,5 +247,6 @@ class MainWindow(QMainWindow):
         self.store.setValue("show_hidden", self.show_hidden.isChecked())
         self.store.setValue("root", str(self.files.root or ""))
         self.store.setValue("recent_roots", [str(p) for p in self.files.recent])
-        self.store.setValue("open_files", [str(t.path) for t in self.editors.file_tabs()])
+        self.store.setValue("open_files", [str(t.path) for t in self.editors.file_tabs() if t.path])
+        self.store.setValue("page", self.pages.currentIndex())
         event.accept()

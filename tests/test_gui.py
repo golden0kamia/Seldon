@@ -61,8 +61,11 @@ def qapp(tmp_path_factory):
 def window(qapp, tmp_path, monkeypatch):
     from PySide6.QtWidgets import QMessageBox
 
+    from PySide6.QtCore import QSettings
+
     from seldon.gui.window import MainWindow
 
+    QSettings("Seldon", "seldon-gui").clear()   # chaque test part d'une fenêtre neuve
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Discard)
     monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: pytest.fail(f"avertissement : {a[2]}"))
     shutil.copy(ROOT / "config.yaml", tmp_path / "config.yaml")
@@ -129,3 +132,38 @@ def test_theme_variants_switch_and_persist(window, qapp):
     window.toggle_theme()
     assert theme.VARIANT == "light" and theme.LIGHT["BG"] in qapp.styleSheet()
     assert theme.DARK["BG"] not in theme.stylesheet()
+
+
+def test_editor_page_always_has_a_document(window):
+    from seldon.gui.window import EDITOR_PAGE, SETTINGS_PAGE
+
+    window.show_page(EDITOR_PAGE)
+    tabs = window.editors.file_tabs()
+    assert len(tabs) == 1 and tabs[0].path is None and tabs[0].editor is not None
+    window.editors.close_current()          # fermer le dernier onglet en rouvre un vierge
+    assert len(window.editors.file_tabs()) == 1
+    window.show_page(SETTINGS_PAGE)
+    assert window.masthead.mode_buttons[SETTINGS_PAGE].isChecked()
+
+
+def test_opening_file_replaces_blank_document_and_shows_editor(window, tmp_path):
+    from seldon.gui.window import EDITOR_PAGE
+
+    tab = window.editors.open_file(tmp_path / "projet" / "main.py")
+    assert window.pages.currentIndex() == EDITOR_PAGE
+    assert [t.path for t in window.editors.file_tabs()] == [tab.path]
+
+
+def test_untitled_document_save_as(window, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+
+    from seldon.gui.window import EDITOR_PAGE
+
+    target = tmp_path / "projet" / "notes.md"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), ""))
+    window.show_page(EDITOR_PAGE)
+    tab = window.editors.new_document()
+    tab.editor.setPlainText("# Notes")
+    window.save_current()
+    assert target.read_text(encoding="utf-8") == "# Notes"
+    assert tab.path == target.resolve() and tab.editor.language == "markdown"
