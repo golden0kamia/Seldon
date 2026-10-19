@@ -1,0 +1,61 @@
+# Configuration de Seldon. Chaque étage : {engine: <nom>, options: {...}}.
+# Lancer : python -m seldon            (micro + haut-parleur)
+#          python -m seldon --text     (clavier + console, pour tester le cerveau)
+
+log_level: INFO
+memory:                   # mémoire des conversations (reprise à tout moment)
+  enabled: true
+  dir: data/conversations
+  new_after_idle_s: 600   # après 10 min de silence, nouvelle conversation (l'ancienne est gardée)
+
+commands: true            # commandes locales : exit, reset, actions, aide (taper /aide)
+confirm: console          # validation des actions sensibles : console | always | never
+
+stt:
+  engine: whisper
+  options:
+    model: small          # tiny / base / small / medium / large-v3
+    language: fr
+    device: cpu           # cuda si GPU NVIDIA
+    compute_type: int8
+    vad: silero
+    silence_ms: 700       # silence qui termine une phrase
+    wake_words: null      # ex. ["Seldon"] pour ne réagir qu'à l'appel
+
+speakers:
+  engine: resemblyzer     # "none" pour désactiver
+  options:
+    voices_dir: data/voices
+    threshold: 0.75       # enregistrer une voix : python -m seldon.tools.enroll Bastien
+
+brain:
+  engine: llamacpp        # serveur local `llama serve` (llama.cpp). Alternatives : ollama, claude
+  options:
+    base_url: http://127.0.0.1:9931/v1
+    model: null           # null = modèle chargé sur le serveur
+    vision: false         # true si le modèle lit les images (caméra)
+    thinking: false       # raisonnement du modèle : plus lent, parfois plus juste
+    max_steps: 10
+  # engine: ollama
+  # options: {model: llama3.1:8b}
+  # engine: claude
+  # options: {model: claude-opus-5-5, effort: low}   # nécessite ANTHROPIC_API_KEY
+
+tts:
+  engine: piper           # pyttsx3 en secours (espeak)
+  options:
+    voice: fr_FR-tom-medium   # voix masculine ; autre : fr_FR-upmc-medium + speaker_id 1 (pierre)
+    speed: 1.25            # 1.0 = normal ; 1.25 = 25 % plus rapide
+
+actions:
+  - speak
+  - conversations         # retrouver / reprendre une conversation passée à la voix
+  - engine: terminal
+    options:
+      mode: allowlist     # lecture seule sans confirmation ; sinon confirm | auto
+      timeout: 30
+      allowed_speakers: null   # ex. [Bastien]
+  - engine: camera
+    options:
+      device: 0
+      save_dir: data/captures

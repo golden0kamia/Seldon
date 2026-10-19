@@ -1,0 +1,235 @@
+"""Fenêtre principale : arborescence à gauche, paramètres et fichiers en onglets à droite."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from PySide6.QtCore import QByteArray, QSettings, Qt
+from PySide6.QtGui import QAction, QActionGroup, QGuiApplication, QKeySequence
+from PySide6.QtWidgets import QApplication, QFileDialog, QLabel, QMainWindow, QSplitter, QVBoxLayout, QWidget
+
+from seldon.gui import theme
+
+from seldon.gui.editor import EditorTabs, FileTab
+from seldon.gui.files import FileBrowser
+from seldon.gui.settings import SettingsPanel
+
+SETTINGS_TITLE = "⚙ Paramètres"
+THEMES = [("auto", "Automatique (système)"), ("light", "Clair"), ("dark", "Sombre")]
+
+
+def project_roots(project: Path, doc) -> list[tuple[str, Path]]:
+    """Dossiers proposés d'office : le projet Seldon, ses données, et les ``cwd`` des actions."""
+    roots = [("Seldon", project)]
+    data = project / "data"
+    if data.is_dir():
+        roots.append(("Données", data))
+    for item in (doc or {}).get("actions", []) or []:
+        if not hasattr(item, "get"):
+            continue
+        cwd = (item.get("options") or {}).get("cwd")
+        if isinstance(cwd, str) and cwd:
+            p = Path(cwd).expanduser()
+            roots.append((f"Projets ({item.get('engine')})", p if p.is_absolute() else project / p))
+    return roots
+
+
+class MainWindow(QMainWindow):
+    def __init__(self, config_path: Path, root: Path | None = None) -> None:
+        super().__init__()
+        self.setWindowTitle("Seldon")
+        self.store = QSettings("Seldon", "seldon-gui")
+        self.config_path = config_path.resolve()
+        self.project = self.config_path.parent
+
+        self.files = FileBrowser()
+        self.editors = EditorTabs()
+        self.settings = SettingsPanel(self.config_path)
+        self.editors.add_fixed(self.settings, SETTINGS_TITLE)
+        self.editors.tabs.setCurrentIndex(0)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(self.files)
+        splitter.addWidget(self.editors)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([300, 1000])
+        self.splitter = splitter
+        self.masthead = theme.Masthead()
+        central = QWidget(objectName="central")
+        lay = QVBoxLayout(central)
+        lay.setContentsMargins(8, 0, 8, 0)
+        lay.setSpacing(0)
+        lay.addWidget(self.masthead)
+        lay.addWidget(splitter, 1)
+        self.setCentralWidget(central)
+
+        self.position = QLabel()
+        self.statusBar().addPermanentWidget(self.position)
+
+        self.files.open_requested.connect(self.open_path)
+        self.files.moved.connect(self.editors.path_moved)
+        self.files.deleted.connect(self.editors.path_deleted)
+        self.files.root_changed.connect(lambda p: self.statusBar().showMessage(str(p), 3000))
+        self.settings.open_requested.connect(self.open_path)
+        self.settings.saved.connect(self._settings_saved)
+        self.settings.dirty_changed.connect(self._settings_dirty)
+        self.editors.current_changed.connect(self._update_status)
+        self.editors.saved.connect(lambda p: self.statusBar().showMessage(f"Enregistré : {p}", 3000))
+
+        self._build_menus()
+        self._restore(root)
+
+    # --- menus --------------------------------------------------------------
+    def _build_menus(self) -> None:
+        ed = self.editors.make_actions()
+        ed["save"].triggered.disconnect()
+        ed["save"].triggered.connect(self.save_current)
+
+        def act(text: str, slot, shortcut=None) -> QAction:
+            a = QAction(text, self)
+            if shortcut:
+                a.setShortcut(QKeySequence(shortcut))
+            a.triggered.connect(slot)
+            return a
+
+        file_menu = self.menuBar().addMenu("&Fichier")
+        file_menu.addAction(act("&Ouvrir un fichier…", self.choose_file, QKeySequence.StandardKey.Open))
+        file_menu.addAction(act("Ouvrir un &dossier…", self.files.choose_root, "Ctrl+Shift+O"))
+        file_menu.addSeparator()
+        for key in ("save", "save_all", "close"):
+            file_menu.addAction(ed[key])
+        file_menu.addSeparator()
+        file_menu.addAction(act("&Quitter", self.close, QKeySequence.StandardKey.Quit))
+
+        edit_menu = self.menuBar().addMenu("&Édition")
+        edit_menu.addAction(ed["find"])
+        edit_menu.addAction(ed["replace"])
+        edit_menu.addAction(act("Commenter / décommenter", self._toggle_comment, "Ctrl+/"))
+
+        view = self.menuBar().addMenu("&Affichage")
+        view.addAction(act(SETTINGS_TITLE, lambda: self.editors.tabs.setCurrentWidget(self.settings), "Ctrl+,"))
+        self.show_hidden = act("Afficher les fichiers cachés", self.files.set_show_hidden)
+        self.show_hidden.setCheckable(True)
+        view.addAction(self.show_hidden)
+        toggle_tree = act("Panneau des fichiers", lambda on: self.files.setVisible(on), "Ctrl+B")
+        toggle_tree.setCheckable(True)
+        toggle_tree.setChecked(True)
+        view.addAction(toggle_tree)
+        view.addAction(act("Afficher le fichier courant dans l'arborescence", self._reveal_current))
+        view.addSeparator()
+        themes = view.addMenu("&Thème")
+        group = QActionGroup(self)
+        self.theme_actions: dict[str, QAction] = {}
+        for key, label in THEMES:
+            a = act(label, lambda _=False, k=key: self.set_theme(k))
+            a.setCheckable(True)
+            group.addAction(a)
+            themes.addAction(a)
+            self.theme_actions[key] = a
+        view.addAction(act("Basculer clair / sombre", self.toggle_theme, "Ctrl+Shift+L"))
+        self.masthead.toggle_variant.connect(self.toggle_theme)
+        hints = QGuiApplication.styleHints()
+        if hasattr(hints, "colorSchemeChanged"):
+            hints.colorSchemeChanged.connect(lambda _s: self.theme_mode == "auto" and self.set_theme("auto"))
+
+    # --- thème ----------------------------------------------------------------
+    def set_theme(self, mode: str) -> None:
+        """``auto`` suit le système ; ``light`` / ``dark`` forcent la variante."""
+        self.theme_mode = mode if mode in dict(THEMES) else "auto"
+        self.theme_actions[self.theme_mode].setChecked(True)
+        app = QApplication.instance()
+        if app is not None:
+            theme.apply(app, self.theme_mode)
+        self.store.setValue("theme", self.theme_mode)
+
+    def toggle_theme(self) -> None:
+        self.set_theme("light" if theme.VARIANT == "dark" else "dark")
+
+    def _toggle_comment(self) -> None:
+        tab = self.editors.current()
+        if tab and tab.editor:
+            tab.editor.toggle_comment()
+
+    def _reveal_current(self) -> None:
+        tab = self.editors.current()
+        if tab:
+            if self.files.root is None or self.files.root not in tab.path.parents:
+                self.files.set_root(tab.path.parent)
+            self.files.reveal(tab.path)
+
+    # --- actions ------------------------------------------------------------
+    def open_path(self, path: Path) -> None:
+        self.editors.open_file(path)
+
+    def choose_file(self) -> None:
+        start = str(self.files.root or self.project)
+        paths, _ = QFileDialog.getOpenFileNames(self, "Ouvrir des fichiers", start)
+        for p in paths:
+            self.open_path(Path(p))
+
+    def save_current(self) -> None:
+        if self.editors.tabs.currentWidget() is self.settings:
+            self.settings.save()
+        else:
+            self.editors.save()
+
+    def _settings_saved(self, path: Path) -> None:
+        self.statusBar().showMessage(f"Paramètres enregistrés : {path}", 3000)
+        self.editors.reload_path(path)
+        self.files.set_roots(project_roots(self.project, self.settings.doc), self.files.recent)
+
+    def _settings_dirty(self, dirty: bool) -> None:
+        i = self.editors.tabs.indexOf(self.settings)
+        self.editors.tabs.setTabText(i, ("● " if dirty else "") + SETTINGS_TITLE)
+        self._update_status()
+
+    def _update_status(self) -> None:
+        pending = self.settings.dirty + sum(t.modified for t in self.editors.file_tabs())
+        if pending:
+            self.masthead.set_state(f"{pending} modif. non enregistrée(s)", theme.AMBER)
+        else:
+            self.masthead.set_state("prêt", theme.ACCENT_HI)
+        tab = self.editors.current()
+        if isinstance(tab, FileTab) and tab.editor:
+            c = tab.editor.textCursor()
+            self.position.setText(f"{tab.editor.language.upper()}  ·  LN {c.blockNumber() + 1:>4}  COL {c.positionInBlock() + 1:>3}")
+            self.setWindowTitle(f"{tab.path.name} — Seldon")
+        else:
+            self.position.setText("")
+            self.setWindowTitle("Seldon")
+
+    # --- persistance --------------------------------------------------------
+    def _restore(self, root: Path | None) -> None:
+        geometry = self.store.value("geometry")
+        if isinstance(geometry, QByteArray):
+            self.restoreGeometry(geometry)
+        else:
+            self.resize(1400, 850)
+        splitter = self.store.value("splitter")
+        if isinstance(splitter, QByteArray):
+            self.splitter.restoreState(splitter)
+        self.theme_mode = str(self.store.value("theme", "auto"))
+        self.theme_actions.get(self.theme_mode, self.theme_actions["auto"]).setChecked(True)
+        hidden = self.store.value("show_hidden", False, type=bool)
+        self.show_hidden.setChecked(hidden)
+        self.files.set_show_hidden(hidden)
+        recent = [Path(p) for p in (self.store.value("recent_roots") or []) if p]
+        self.files.set_roots(project_roots(self.project, self.settings.doc), recent)
+        last = self.store.value("root")
+        self.files.set_root(root or (Path(last) if last and Path(last).is_dir() else self.project))
+        for p in self.store.value("open_files") or []:
+            if p and Path(p).is_file():
+                self.editors.open_file(Path(p))
+        self.editors.tabs.setCurrentIndex(0)
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        if not self.settings.confirm_close() or not self.editors.confirm_close_all():
+            event.ignore()
+            return
+        self.store.setValue("geometry", self.saveGeometry())
+        self.store.setValue("splitter", self.splitter.saveState())
+        self.store.setValue("show_hidden", self.show_hidden.isChecked())
+        self.store.setValue("root", str(self.files.root or ""))
+        self.store.setValue("recent_roots", [str(p) for p in self.files.recent])
+        self.store.setValue("open_files", [str(t.path) for t in self.editors.file_tabs()])
+        event.accept()

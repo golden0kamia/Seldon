@@ -1,0 +1,539 @@
+"""Panneau de paramètres : formulaire généré depuis config.yaml et les signatures des plugins.
+
+Chaque champ modifie directement le document ``ruamel`` (commentaires conservés) ;
+« Enregistrer » le réécrit. Les moteurs proposés et leurs options viennent de
+``plugins.discover()`` : un nouveau plugin apparaît sans toucher à l'interface.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Callable
+
+import yaml
+from PySide6.QtCore import QFileSystemWatcher, Qt, QTimer, Signal
+from PySide6.QtWidgets import (
+    QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QLineEdit, QListWidget, QMessageBox, QPushButton, QScrollArea, QSpinBox, QStackedWidget,
+    QToolButton, QVBoxLayout, QWidget,
+)
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.scalarstring import ScalarString
+
+from seldon.config import StageConfig
+from seldon.gui import configdoc, theme
+from seldon.gui.plugins import MISSING, Param, PluginInfo, choices_from_comment, class_params, discover
+
+PACKAGE = Path(__file__).resolve().parent.parent
+
+SECTIONS = [  # (clé, titre, catégorie de plugins)
+    ("stt", "Écoute (STT)", "stt"),
+    ("speakers", "Locuteurs", "speakers"),
+    ("brain", "Cerveau", "brain"),
+    ("tts", "Voix (TTS)", "tts"),
+]
+
+FIXED_CHOICES = {
+    "log_level": ["DEBUG", "INFO", "WARNING", "ERROR"],
+    "compute_type": ["int8", "int8_float16", "float16", "float32"],
+}
+
+
+def _yaml_inline(value: Any) -> str:
+    if value is None:
+        return ""
+    return yaml.safe_dump(_plain(value), default_flow_style=True, allow_unicode=True, width=10_000).strip().removesuffix("...").strip()
+
+
+def _plain(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_plain(v) for v in value]
+    if isinstance(value, bool) or value is None:
+        return value
+    for t in (int, float, str):
+        if isinstance(value, t):
+            return t(value)
+    return value
+
+
+def make_editor(value: Any, choices: list[str], on_change: Callable[[Any], None]) -> QWidget:
+    """Widget adapté au type de la valeur ; appelle ``on_change(nouvelle_valeur)``."""
+    if isinstance(value, bool):
+        w = QCheckBox()
+        w.setChecked(value)
+        w.toggled.connect(on_change)
+        return w
+    if isinstance(value, int):
+        w = QSpinBox(minimum=-1_000_000_000, maximum=1_000_000_000)
+        w.setValue(value)
+        w.valueChanged.connect(on_change)
+        return w
+    if isinstance(value, float):
+        w = QDoubleSpinBox(minimum=-1e9, maximum=1e9, decimals=3, singleStep=0.05)
+        w.setValue(value)
+        w.valueChanged.connect(on_change)
+        return w
+    if isinstance(value, str):
+        style = type(value) if isinstance(value, ScalarString) else str   # garde les guillemets d'origine
+        if choices:
+            w = QComboBox(editable=True)
+            w.addItems(choices if value in choices else [value, *choices])
+            w.setCurrentText(value)
+            w.currentTextChanged.connect(lambda t: on_change(style(t)))
+            return w
+        w = QLineEdit(value)
+        w.textEdited.connect(lambda t: on_change(style(t)))
+        return w
+    # null, listes, dictionnaires : saisie YAML en ligne ([a, b], {k: v}, vide = null)
+    w = QLineEdit(_yaml_inline(value), placeholderText="null")
+    w.setToolTip("Valeur YAML : texte, nombre, [liste], {clé: valeur} ; vide = null")
+
+    def edited(text: str) -> None:
+        try:
+            parsed = yaml.safe_load(text) if text.strip() else None
+        except yaml.YAMLError:
+            w.setProperty("invalid", True)
+            w.style().polish(w)
+            return
+        w.setProperty("invalid", False)
+        w.style().polish(w)
+        on_change(parsed)
+
+    w.textEdited.connect(edited)
+    return w
+
+
+def hint_label(text: str) -> QLabel:
+    label = QLabel(text, wordWrap=True, objectName="hint")
+    font = label.font()
+    font.setPointSizeF(font.pointSizeF() * 0.9)
+    label.setFont(font)
+    label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    return label
+
+
+class OptionsForm(QWidget):
+    """Formulaire clé → valeur sur un ``CommentedMap`` (modifié en place)."""
+
+    def __init__(self, mapping: CommentedMap, known: dict[str, Param], on_change: Callable[[], None],
+                 keys: Callable[[str], bool] | None = None, extensible: bool = True) -> None:
+        super().__init__()
+        self.mapping, self.known, self.on_change = mapping, known, on_change
+        self.keys = keys or (lambda _k: True)
+        self.extensible = extensible
+        self.grid = QGridLayout(self)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setColumnStretch(1, 3)
+        self.grid.setColumnStretch(2, 4)
+        self.rebuild()
+
+    def set_known(self, known: dict[str, Param]) -> None:
+        self.known = known
+        self.rebuild()
+
+    def rebuild(self) -> None:
+        while self.grid.count():
+            item = self.grid.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        row = 0
+        for key in list(self.mapping):
+            if not self.keys(str(key)) or isinstance(self.mapping[key], CommentedMap) and not self.extensible:
+                continue
+            self._add_row(row, str(key))
+            row += 1
+        if row == 0:
+            self.grid.addWidget(hint_label("Aucune option : les valeurs par défaut du moteur s'appliquent."), row, 0, 1, 4)
+            row += 1
+        if self.extensible:
+            self._add_adder(row)
+
+    def _set(self, key: str, value: Any) -> None:
+        self.mapping[key] = value
+        self.on_change()
+
+    def _add_row(self, row: int, key: str) -> None:
+        value = self.mapping[key]
+        param = self.known.get(key)
+        comment = configdoc.comment(self.mapping, key)
+        hint = comment or (param.comment if param else "")
+        choices = FIXED_CHOICES.get(key) or choices_from_comment(comment) or (choices_from_comment(param.comment) if param else [])
+        if isinstance(value, str) and choices and value not in choices and not (param and param.default in choices):
+            choices = []   # le commentaire ne décrivait pas des valeurs possibles
+        label = QLabel(key)
+        label.setFont(theme.mono_font(10))
+        tips = [param.hint()] if param else []
+        if self.known and param is None and self.extensible:
+            label.setText(f"{key} ⚠")
+            tips.append("Option inconnue pour ce moteur (ignorée ou erreur au démarrage).")
+        label.setToolTip("\n".join(t for t in tips if t))
+        editor = make_editor(value, choices, lambda v, k=key: self._set(k, v))
+        editor.setToolTip(label.toolTip() or editor.toolTip())
+        self.grid.addWidget(label, row, 0)
+        self.grid.addWidget(editor, row, 1)
+        self.grid.addWidget(hint_label(hint), row, 2)
+        if self.extensible:
+            remove = QToolButton(text="✕", toolTip="Retirer l'option (valeur par défaut du moteur)", autoRaise=True)
+            remove.clicked.connect(lambda _=False, k=key: self._remove(k))
+            self.grid.addWidget(remove, row, 3)
+
+    def _remove(self, key: str) -> None:
+        del self.mapping[key]
+        self.on_change()
+        self.rebuild()
+
+    def _add_adder(self, row: int) -> None:
+        box = QComboBox(editable=True)
+        box.lineEdit().setPlaceholderText("nouvelle option…")
+        missing = [k for k in self.known if k not in self.mapping]
+        for k in missing:
+            box.addItem(k)
+            box.setItemData(box.count() - 1, self.known[k].hint(), Qt.ItemDataRole.ToolTipRole)
+        box.setCurrentIndex(-1)
+        add = QPushButton("Ajouter")
+
+        def do_add() -> None:
+            key = box.currentText().strip()
+            if not key or key in self.mapping:
+                return
+            param = self.known.get(key)
+            default = param.default if param and param.default is not MISSING else None
+            self.mapping[key] = default
+            self.on_change()
+            self.rebuild()
+
+        add.clicked.connect(do_add)
+        box.lineEdit().returnPressed.connect(do_add)
+        line = QHBoxLayout()
+        line.addWidget(box, 1)
+        line.addWidget(add)
+        line.addStretch(1)
+        self.grid.addLayout(line, row, 0, 1, 4)
+
+
+def _engine_combo(plugins: dict[str, PluginInfo], current: str) -> QComboBox:
+    combo = QComboBox(editable=True)
+    names = sorted(plugins)
+    combo.addItems(names if current in names else [current, *names])
+    for i in range(combo.count()):
+        info = plugins.get(combo.itemText(i))
+        if info:
+            combo.setItemData(i, info.doc, Qt.ItemDataRole.ToolTipRole)
+    combo.setCurrentText(current)
+    combo.setToolTip("Nom du plugin (ou « module:Classe » pour un plugin externe)")
+    return combo
+
+
+class StageEditor(QWidget):
+    """Moteur + options d'un étage (``{engine, options}``)."""
+
+    def __init__(self, node: CommentedMap, plugins: dict[str, PluginInfo], on_change: Callable[[], None]) -> None:
+        super().__init__()
+        self.node, self.plugins, self.on_change = node, plugins, on_change
+        engine = str(node.get("engine", ""))
+        self.combo = _engine_combo(plugins, engine)
+        self.doc = hint_label("")
+        self.form = OptionsForm(node["options"], self._known(engine), on_change)
+        head = QHBoxLayout()
+        head.addWidget(theme.caption("moteur"))
+        head.addWidget(self.combo, 1)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addLayout(head)
+        lay.addWidget(self.doc)
+        lay.addWidget(self.form)
+        self._show_doc(engine)
+        self.combo.currentTextChanged.connect(self._engine_changed)
+
+    def _known(self, engine: str) -> dict[str, Param]:
+        info = self.plugins.get(engine)
+        return info.params if info else {}
+
+    def _show_doc(self, engine: str) -> None:
+        info = self.plugins.get(engine)
+        comment = configdoc.comment(self.node, "engine")
+        text = info.doc if info else ("Plugin externe" if ":" in engine else "Plugin inconnu")
+        self.doc.setText(text + (f"\nNote : {comment}" if comment else ""))
+
+    def _engine_changed(self, engine: str) -> None:
+        engine = engine.strip()
+        if not engine:
+            return
+        self.node["engine"] = engine
+        self._show_doc(engine)
+        self.form.set_known(self._known(engine))
+        self.on_change()
+
+
+class ActionsPage(QWidget):
+    def __init__(self, actions: CommentedSeq, plugins: dict[str, PluginInfo], on_change: Callable[[], None]) -> None:
+        super().__init__()
+        self.actions, self.plugins, self.on_change = actions, plugins, on_change
+        self.lay = QVBoxLayout(self)
+        self.rebuild()
+
+    def rebuild(self) -> None:
+        while self.lay.count():
+            item = self.lay.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                while item.layout().count():
+                    sub = item.layout().takeAt(0)
+                    if sub.widget():
+                        sub.widget().deleteLater()
+        self.lay.addWidget(hint_label("Outils que le cerveau peut appeler. L'ordre n'a pas d'importance."))
+        for i in range(len(self.actions)):
+            node = configdoc.action_entry(self.actions, i)
+            box = theme.NeuCard("inset", radius=16, padding=8)
+            v = box.body
+            tools = QHBoxLayout()
+            title = QLabel(str(node.get("engine", "")))
+            title.setFont(theme.label_font(10.5))
+            tools.addWidget(theme.Led(10))
+            tools.addWidget(title)
+            if note := configdoc.comment(self.actions, i):
+                tools.addWidget(hint_label(note), 1)
+            else:
+                tools.addStretch(1)
+            for text, tip, slot in (("↑", "Monter", lambda _=False, i=i: self._move(i, -1)),
+                                    ("↓", "Descendre", lambda _=False, i=i: self._move(i, 1)),
+                                    ("✕", "Retirer cette action", lambda _=False, i=i: self._remove(i))):
+                b = QToolButton(text=text, toolTip=tip, autoRaise=True)
+                b.clicked.connect(slot)
+                tools.addWidget(b)
+            v.addLayout(tools)
+            stage = StageEditor(node, self.plugins, self.on_change)
+            stage.combo.currentTextChanged.connect(lambda t, lbl=title: lbl.setText(t))
+            v.addWidget(stage)
+            self.lay.addWidget(box)
+        used = {str(self.actions[i].get("engine")) for i in range(len(self.actions))}
+        add_box = QComboBox(editable=True)
+        add_box.addItems([n for n in sorted(self.plugins) if n not in used])
+        for i in range(add_box.count()):
+            add_box.setItemData(i, self.plugins[add_box.itemText(i)].doc, Qt.ItemDataRole.ToolTipRole)
+        add = QPushButton("Ajouter l'action")
+        add.clicked.connect(lambda: self._add(add_box.currentText().strip()))
+        line = QHBoxLayout()
+        line.addWidget(add_box, 1)
+        line.addWidget(add)
+        line.addStretch(1)
+        self.lay.addLayout(line)
+        self.lay.addStretch(1)
+
+    def _add(self, name: str) -> None:
+        if not name:
+            return
+        self.actions.append(name)
+        self.on_change()
+        self.rebuild()
+
+    def _remove(self, i: int) -> None:
+        del self.actions[i]
+        self.on_change()
+        self.rebuild()
+
+    def _move(self, i: int, delta: int) -> None:
+        j = i + delta
+        if 0 <= j < len(self.actions):
+            self.actions[i], self.actions[j] = self.actions[j], self.actions[i]
+            self.on_change()
+            self.rebuild()
+
+
+def validate(text: str) -> str | None:
+    """Vérifie que le YAML produit se charge comme une config Seldon ; renvoie l'erreur éventuelle."""
+    try:
+        raw = yaml.safe_load(text) or {}
+        for key, _title, _cat in SECTIONS:
+            if key in raw:
+                StageConfig.parse(raw[key])
+        for a in raw.get("actions", []) or []:
+            StageConfig.parse(a)
+    except Exception as e:  # noqa: BLE001 — message montré tel quel
+        return f"{type(e).__name__} : {e}"
+    return None
+
+
+class SettingsPanel(QWidget):
+    saved = Signal(Path)
+    open_requested = Signal(Path)
+    dirty_changed = Signal(bool)
+
+    def __init__(self, config_path: Path, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.path = config_path.resolve()
+        self.plugins = discover(PACKAGE)
+        self.memory_params = class_params(PACKAGE / "core" / "memory.py", "ConversationMemory")
+        self.memory_params.pop("brain", None)
+        self.memory_params.pop("brain_kind", None)
+        self.doc = CommentedMap()
+        self.disk_text = ""
+        self.dirty = False
+
+        self.title = QLabel(objectName="path")
+        self.banner = QLabel(wordWrap=True, objectName="banner")
+        self.banner.hide()
+        self.save_btn = QPushButton("Enregistrer", objectName="primary")
+        self.revert_btn = QPushButton("Annuler les modifications")
+        yaml_btn = QPushButton("Ouvrir le YAML")
+        self.save_btn.clicked.connect(self.save)
+        self.revert_btn.clicked.connect(self.revert)
+        yaml_btn.clicked.connect(lambda: self.open_requested.emit(self.path))
+        top = QHBoxLayout()
+        top.setContentsMargins(12, 0, 12, 0)
+        top.addWidget(theme.caption("fichier"))
+        top.addWidget(self.title, 1)
+        top.addWidget(yaml_btn)
+        top.addWidget(self.revert_btn)
+        top.addWidget(self.save_btn)
+
+        self.nav = QListWidget()
+        self.pages = QStackedWidget()
+        self.nav.currentRowChanged.connect(self.pages.setCurrentIndex)
+        nav_card = theme.NeuCard("raised", padding=10)
+        nav_card.setFixedWidth(220)
+        nav_card.add(theme.caption("sections"))
+        nav_card.add(self.nav, 1)
+        pages_card = theme.NeuCard("raised", padding=14)
+        pages_card.add(self.pages, 1)
+        body = QHBoxLayout()
+        body.setSpacing(0)
+        body.addWidget(nav_card)
+        body.addWidget(pages_card, 1)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 4, 0, 0)
+        lay.addLayout(top)
+        lay.addWidget(self.banner)
+        lay.addLayout(body, 1)
+
+        self.watcher = QFileSystemWatcher(self)
+        self.watcher.fileChanged.connect(lambda _p: QTimer.singleShot(150, self._disk_changed))
+        self.reload()
+
+    # --- construction -------------------------------------------------------
+    def _page(self, title: str, widget: QWidget, intro: str = "") -> None:
+        inner = QWidget()
+        v = QVBoxLayout(inner)
+        head = QLabel(title.upper(), objectName="pageTitle")
+        f = theme.mono_font(14)
+        f.setWeight(f.Weight.Bold)
+        f.setLetterSpacing(f.SpacingType.AbsoluteSpacing, 3)
+        head.setFont(f)
+        row = QHBoxLayout()
+        row.addWidget(head)
+        row.addWidget(theme.Stripes(48, 14))
+        row.addStretch(1)
+        v.addLayout(row)
+        if intro:
+            v.addWidget(hint_label(intro))
+        v.addWidget(widget)
+        v.addStretch(1)
+        area = QScrollArea(widgetResizable=True, frameShape=QFrame.Shape.NoFrame)
+        area.setWidget(inner)
+        self.pages.addWidget(area)
+        self.nav.addItem(title)
+
+    def reload(self) -> None:
+        row = max(self.nav.currentRow(), 0)
+        try:
+            self.disk_text = self.path.read_text(encoding="utf-8") if self.path.exists() else ""
+            self.doc = configdoc.loads(self.disk_text)
+        except Exception as e:  # noqa: BLE001 — YAML invalide : on le dit et on propose l'éditeur
+            self.doc = None
+            self.banner.setText(f"config.yaml illisible ({e}). Corrigez-le dans l'éditeur (« Ouvrir le YAML »).")
+            self.banner.show()
+        if str(self.path) not in self.watcher.files() and self.path.exists():
+            self.watcher.addPath(str(self.path))
+        self.nav.clear()
+        while self.pages.count():
+            w = self.pages.widget(0)
+            self.pages.removeWidget(w)
+            w.deleteLater()
+        self.title.setText(str(self.path).replace(str(Path.home()), "~", 1))
+        self.title.setToolTip(str(self.path))
+        if self.doc is None:
+            self._set_dirty(False)
+            return
+        self.banner.hide()
+
+        reserved = {k for k, _t, _c in SECTIONS} | {"actions", "memory"}
+        general = OptionsForm(self.doc, {}, self._changed,
+                              keys=lambda k: k not in reserved, extensible=False)
+        self._page("Général", general, "Réglages globaux de l'assistant.")
+        memory = self.doc.get("memory")
+        if not isinstance(memory, CommentedMap):
+            memory = self.doc["memory"] = CommentedMap(enabled=True)
+        self._page("Mémoire", OptionsForm(memory, {"enabled": Param("enabled", True, "True", "bool"), **self.memory_params},
+                                          self._changed), "Conversations sauvegardées et reprise.")
+        for key, title, cat in SECTIONS:
+            node = configdoc.stage(self.doc, key)
+            self._page(title, StageEditor(node, self.plugins.get(cat, {}), self._changed))
+        actions = self.doc.get("actions")
+        if not isinstance(actions, CommentedSeq):
+            actions = self.doc["actions"] = CommentedSeq(actions or ["speak"])
+        self._page("Actions", ActionsPage(actions, self.plugins.get("actions", {}), self._changed))
+        self.nav.setCurrentRow(min(row, self.nav.count() - 1))
+        self._set_dirty(False)
+
+    # --- état ---------------------------------------------------------------
+    def _changed(self) -> None:
+        self._set_dirty(configdoc.to_text(self.doc) != self.disk_text)
+
+    def _set_dirty(self, dirty: bool) -> None:
+        self.save_btn.setEnabled(dirty)
+        self.revert_btn.setEnabled(dirty)
+        if dirty != self.dirty:
+            self.dirty = dirty
+            self.dirty_changed.emit(dirty)
+
+    def save(self) -> bool:
+        if self.doc is None:
+            return False
+        text = configdoc.to_text(self.doc)
+        if (error := validate(text)) is not None:
+            QMessageBox.warning(self, "Configuration invalide", error)
+            return False
+        try:
+            self.path.write_text(text, encoding="utf-8")
+        except OSError as e:
+            QMessageBox.warning(self, "Enregistrement impossible", str(e))
+            return False
+        self.disk_text = text
+        self.banner.hide()
+        self._set_dirty(False)
+        self.saved.emit(self.path)
+        return True
+
+    def revert(self) -> None:
+        self.reload()
+
+    def confirm_close(self) -> bool:
+        if not self.dirty:
+            return True
+        answer = QMessageBox.question(
+            self, "Paramètres non enregistrés", "Enregistrer les modifications des paramètres ?",
+            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+        )
+        if answer == QMessageBox.StandardButton.Save:
+            return self.save()
+        return answer == QMessageBox.StandardButton.Discard
+
+    def _disk_changed(self) -> None:
+        if self.path.exists() and str(self.path) not in self.watcher.files():
+            self.watcher.addPath(str(self.path))
+        try:
+            text = self.path.read_text(encoding="utf-8")
+        except OSError:
+            return
+        if text == self.disk_text:
+            return
+        if not self.dirty:
+            self.reload()
+            return
+        self.banner.setText("config.yaml a été modifié ailleurs. « Annuler les modifications » pour recharger, "
+                            "ou « Enregistrer » pour écraser avec ce formulaire.")
+        self.banner.show()
