@@ -74,6 +74,7 @@ class Assistant:
         enable_commands: bool = True,
         memory: ConversationMemory | None = None,
         follow_up_s: float = 20,
+        acknowledge: bool = True,
     ) -> None:
         self.stt = stt
         self.speakers = speakers
@@ -86,6 +87,7 @@ class Assistant:
         self._stop_requested = False
         self.memory = memory
         self.follow_up_s = follow_up_s
+        self.acknowledge = acknowledge
         self._attentive_until = 0.0
         self._overheard: deque[Utterance] = deque(maxlen=OVERHEARD_MAX)
         # Services accessibles aux actions via ctx.services ; on peut en ajouter.
@@ -122,6 +124,7 @@ class Assistant:
             enable_commands=cfg.commands,
             memory=memory,
             follow_up_s=cfg.follow_up_s,
+            acknowledge=cfg.acknowledge,
         )
 
     def _components(self) -> list[tuple[str, Any]]:
@@ -201,6 +204,17 @@ class Assistant:
         if self.memory and (note := self.memory.absence_note(utterance.speaker, utterance.timestamp)):
             utterance.notes.append(note)
 
+    async def _say_ack(self, text: str) -> None:
+        """Accusé de réception, dit pendant que l'action s'exécute (hors mémoire)."""
+        await self.events.emit("acknowledge", text=text)
+        self.stt.pause()   # évite que l'assistant s'entende lui-même
+        try:
+            await self.tts.speak(text)
+        except Exception as e:
+            log_error(log, "Accusé de réception non prononcé", e)
+        finally:
+            self.stt.resume()
+
     async def process(self, utterance: Utterance) -> None:
         if utterance.addressed is False and time.time() > self._attentive_until:
             utterance = await self._identify(utterance)
@@ -227,12 +241,23 @@ class Assistant:
 
         ctx = ActionContext(utterance=utterance, services=self.services, confirm=self.confirm)
         spoke = False
+        ack: asyncio.Task | None = None
+
+        async def wait_ack() -> None:
+            # La réponse ne doit pas chevaucher l'accusé de réception.
+            if ack is not None:
+                await ack
 
         async def execute(name: str, params: dict) -> ActionResult:
-            nonlocal spoke
+            nonlocal spoke, ack
             action = self.actions.get(name)
             if action is None:
                 return ActionResult.error(f"Action inconnue : {name}")
+            if name == "speak":
+                await wait_ack()
+            elif self.acknowledge and not spoke and ack is None and (text := action.acknowledge(params)):
+                # Une fois par tour, sauf si le cerveau a déjà parlé : dit en parallèle de l'action.
+                ack = asyncio.create_task(self._say_ack(text))
             await self.events.emit("action.start", name=name, params=params)
             try:
                 result = await action.run(params, ctx)
@@ -254,6 +279,7 @@ class Assistant:
                 log_error(log, "Le cerveau n'a pas pu répondre", e)
                 await self.events.emit("error", error=e, stage="brain")
                 final = spoken(e)
+            await wait_ack()
             if final:
                 await self.events.emit("response", text=final)
                 if not spoke and "speak" in self.actions:
@@ -264,5 +290,7 @@ class Assistant:
                     if self.memory:
                         self.memory.record("assistant", final)
         finally:
+            if ack is not None and not ack.done():
+                ack.cancel()
             if self.memory:
                 self.memory.end_turn()

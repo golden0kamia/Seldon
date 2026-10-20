@@ -58,6 +58,7 @@ class Config:
     commands: bool = True       # commandes locales : exit, reset, aide…
     confirm: str = "console"   # "console" (demande au clavier), "always" ou "never"
     follow_up_s: float = 20     # avec mots d'éveil : écoute sans mot d'éveil après un échange
+    acknowledge: bool = True    # annonce qu'une action demandée est comprise et en cours
     log_level: str = "INFO"
 
     @classmethod
@@ -110,5 +111,6 @@ class Config:
             commands=bool(raw.get("commands", True)),
             confirm=confirm,
             follow_up_s=follow_up_s,
+            acknowledge=bool(raw.get("acknowledge", True)),
             log_level=log_level,
         )

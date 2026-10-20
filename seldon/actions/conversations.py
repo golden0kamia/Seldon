@@ -38,6 +38,9 @@ class Conversations(Action):
         self.limit = limit
         self.tail = tail
 
+    def acknowledge(self, params: dict[str, Any]) -> str | None:
+        return "Je cherche dans nos conversations." if params.get("operation") == "chercher" else None
+
     async def run(self, params: dict[str, Any], ctx: ActionContext) -> ActionResult:
         memory = ctx.services.get("memory")
         if memory is None:

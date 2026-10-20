@@ -99,6 +99,48 @@ async def test_unknown_action_and_images_in_tool_result():
     assert tts.said == ["Je vois un chat."]
 
 
+
+def slow_action():
+    from seldon.actions.base import Action
+    from seldon.core.types import ActionResult
+
+    class Slow(Action):
+        name, description = "slow", "tâche longue"
+        input_schema = {"type": "object", "properties": {}}
+        acknowledgement = "Compris, je m'en occupe."
+
+        async def run(self, params, ctx):
+            return ActionResult("fait")
+
+    return Slow()
+
+
+async def test_action_acknowledged_once_before_answer():
+    brain = fake_brain([
+        resp("tool_use", tool("a", "slow"), tool("b", "slow")),
+        resp("tool_use", tool("c", "speak", text="C'est fait.")),
+    ])
+    a, tts = assistant(brain, [slow_action()])
+    await a.process(Utterance("fais-le"))
+    assert tts.said == ["Compris, je m'en occupe.", "C'est fait."]
+
+
+async def test_no_acknowledgement_if_already_spoken_or_disabled():
+    brain = fake_brain([
+        # le cerveau a déjà prévenu : pas d'accusé de réception en plus
+        resp("tool_use", tool("a", "speak", text="Je lance ça."), tool("b", "slow")),
+        resp("end_turn", text("Terminé.")),
+    ])
+    a, tts = assistant(brain, [slow_action()])
+    await a.process(Utterance("fais-le"))
+    assert "Compris, je m'en occupe." not in tts.said
+
+    a, tts = assistant(fake_brain([resp("tool_use", tool("a", "slow")), resp("end_turn", text("Fait."))]),
+                       [slow_action()])
+    a.acknowledge = False
+    await a.process(Utterance("fais-le"))
+    assert tts.said == ["Fait."]
+
 async def test_step_limit_carries_pending_results():
     brain = fake_brain(
         [resp("tool_use", tool("x", "speak", text="un")), resp("end_turn")], max_steps=1

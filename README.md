@@ -17,6 +17,13 @@ micro ─► STT (faster-whisper + VAD) ─► identification du locuteur (Resem
 Le cerveau reçoit « [date | locuteur : X] texte » et décide quelles actions
 lancer. La réponse à l'utilisateur est elle-même une action (`speak`).
 
+Quand une action prend la main (commande terminal, caméra, Claude Code,
+recherche dans les conversations), Seldon prévient aussitôt qu'il a compris
+(« Compris, je m'en occupe. », « Je regarde. »…) pendant qu'elle s'exécute,
+puis donne le résultat. Une seule fois par échange, et pas si le cerveau a
+déjà parlé ; `acknowledge: false` dans `config.yaml` le désactive. Pour une
+nouvelle action : attribut `acknowledgement` (ou méthode `acknowledge(params)`).
+
 ## Installation
 
 ```bash

@@ -170,6 +170,7 @@ def _truncate(text: str, max_chars: int) -> str:
 @register("actions", "terminal")
 class Terminal(Action):
     name = "run_shell_command"
+    acknowledgement = "Compris, je m'en occupe."
     description = (
         "Exécute une commande shell (bash) sur l'ordinateur Linux de l'utilisateur et "
         "renvoie le code de sortie et la sortie (stdout + stderr, éventuellement tronquée). "

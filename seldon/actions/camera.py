@@ -30,6 +30,7 @@ from seldon.core.types import ActionContext, ActionResult, Image
 @register("actions", "camera")
 class Camera(Action):
     name = "capture_image"
+    acknowledgement = "Je regarde."
     description = (
         "Prend une photo avec une caméra branchée à l'ordinateur et te renvoie l'image. "
         "Utilise-la quand l'utilisateur te demande de regarder, de voir ou de décrire "

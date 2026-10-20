@@ -44,6 +44,7 @@ SPOKEN_SUMMARY = (
 @register("actions", "claude_code")
 class ClaudeCode(Action):
     name = "claude_code"
+    acknowledgement = "Compris, je transmets à Claude Code."
     description = (
         "Délègue une tâche complexe à Claude Code, un agent de programmation autonome qui "
         "travaille dans un répertoire de l'ordinateur : écrire ou modifier du code, déboguer, "

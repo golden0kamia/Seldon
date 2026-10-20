@@ -30,6 +30,9 @@ class Action(ABC):
     # True : si le modèle n'a appelé que des actions de ce type (ex. speak), le
     # tour s'arrête là sans le relancer (évite répétitions et latence inutile).
     ends_turn: ClassVar[bool] = False
+    # Phrase dite aussitôt l'action demandée (ex. « Compris, je m'en occupe. »), pour
+    # que l'utilisateur sache qu'on l'a compris pendant qu'elle s'exécute. None : rien.
+    acknowledgement: ClassVar[str | None] = None
 
     async def start(self) -> None:
         """Initialisation (ouvrir un périphérique, etc.)."""
@@ -40,6 +43,10 @@ class Action(ABC):
     @abstractmethod
     async def run(self, params: dict[str, Any], ctx: ActionContext) -> ActionResult:
         ...
+
+    def acknowledge(self, params: dict[str, Any]) -> str | None:
+        """Phrase d'accusé de réception pour ces paramètres (défaut : ``acknowledgement``)."""
+        return self.acknowledgement
 
     def tool_definition(self) -> dict[str, Any]:
         """Définition au format outil (nom, description, JSON Schema)."""
