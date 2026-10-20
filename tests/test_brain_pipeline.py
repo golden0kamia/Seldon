@@ -5,7 +5,7 @@ from anthropic.types import TextBlock, ToolUseBlock
 
 from seldon.actions.speak import Speak
 from seldon.brain.claude import ClaudeBrain
-from seldon.core.pipeline import Assistant
+from seldon.core.pipeline import MUTE_SIGNALS, Assistant
 from seldon.core.types import Image, Utterance
 from seldon.speakers.base import NoSpeakerId
 from seldon.stt.text import TextInput
@@ -178,3 +178,29 @@ def test_registry_and_config(tmp_path):
     assert a.brain.effort == "medium" and list(a.actions) == ["speak"]
     with pytest.raises(SeldonError, match="moteurs disponibles"):
         registry.resolve("tts", "inexistant")
+
+
+@pytest.mark.skipif(not MUTE_SIGNALS, reason="signaux POSIX")
+async def test_mute_signals_reach_stt_while_running():
+    import asyncio
+    import os
+    import signal
+
+    class MutableInput(TextInput):
+        def __init__(self):
+            self.muted = []
+
+        def mute(self, on):
+            self.muted.append(on)
+
+        async def listen(self):
+            for sig in (signal.SIGUSR1, signal.SIGUSR2):
+                os.kill(os.getpid(), sig)
+                await asyncio.sleep(0.05)
+            return
+            yield
+
+    stt = MutableInput()
+    await Assistant(stt, NoSpeakerId(), fake_brain([]), RecordingTTS(), [Speak()]).run()
+    assert stt.muted == [True, False]
+    assert signal.getsignal(signal.SIGUSR1) is signal.SIG_DFL   # gestionnaires retirés à l'arrêt

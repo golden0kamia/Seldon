@@ -5,11 +5,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import signal
 import sys
 
 from seldon.config import Config, StageConfig
 from seldon.core.errors import log_error
-from seldon.core.pipeline import Assistant
+from seldon.core.pipeline import MUTE_SIGNALS, Assistant
 
 log = logging.getLogger("seldon")
 
@@ -19,6 +20,8 @@ def main() -> None:
     parser.add_argument("-c", "--config", default="config.yaml")
     parser.add_argument("--text", action="store_true", help="Clavier + console au lieu du micro et du haut-parleur")
     args = parser.parse_args()
+    for sig in MUTE_SIGNALS:   # un clic sur le bouton micro avant que Seldon soit prêt ne le tue pas
+        signal.signal(sig, signal.SIG_IGN)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     try:

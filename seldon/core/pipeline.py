@@ -9,12 +9,16 @@ transmises au cerveau la fois suivante, pour qu'il sache de quoi on parlait.
 Avec la mémoire, une tâche de fond vérifie toutes les ``compress_every_s``
 secondes la taille des conversations et résume les plus volumineuses ; elle ne
 travaille jamais pendant le traitement d'une prise de parole (verrou ``_busy``).
+
+Les signaux ``MUTE_SIGNALS`` (SIGUSR1 / SIGUSR2, envoyés par le bouton micro de
+la page Journal) coupent et rétablissent le micro (``STTEngine.mute``).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 import time
 from collections import deque
 from typing import Any
@@ -36,6 +40,9 @@ log = logging.getLogger(__name__)
 OVERHEARD_S = 120     # ancienneté maximale des phrases entendues transmises au cerveau
 OVERHEARD_MAX = 6
 
+
+# signal -> micro coupé ? (POSIX seulement)
+MUTE_SIGNALS = {signal.SIGUSR1: True, signal.SIGUSR2: False} if hasattr(signal, "SIGUSR1") else {}
 
 CONFIRM_TAG = "[confirmation]"   # repéré par la page Journal de l'interface (seldon/gui/runner.py)
 
@@ -177,6 +184,9 @@ class Assistant:
 
     async def run(self) -> None:
         compressor: asyncio.Task | None = None
+        loop = asyncio.get_running_loop()
+        for sig, on in MUTE_SIGNALS.items():
+            loop.add_signal_handler(sig, self.stt.mute, on)
         try:
             await self.start()
             if self.memory and self.memory.compress_every_s:
@@ -192,6 +202,8 @@ class Assistant:
         finally:
             if compressor is not None:
                 compressor.cancel()
+            for sig in MUTE_SIGNALS:
+                loop.remove_signal_handler(sig)
             await self.stop()
 
     def request_stop(self) -> None:

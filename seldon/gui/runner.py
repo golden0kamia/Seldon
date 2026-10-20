@@ -15,6 +15,8 @@ from seldon.gui import theme
 
 MAX_LINES = 5000   # au-delà, les plus anciennes lignes sont oubliées
 CONFIRM_TAG = "[confirmation]"   # question posée par seldon.core.pipeline.console_confirm
+MIC_TAG = "[micro]"              # état du micro annoncé par seldon.stt.whisper.WhisperSTT.mute
+MUTE_SIGNALS = {True: getattr(signal, "SIGUSR1", None), False: getattr(signal, "SIGUSR2", None)}   # cf. seldon.core.pipeline
 
 
 def line_color(line: str) -> str | None:
@@ -40,6 +42,7 @@ class RunnerPanel(QWidget):
         self.config_path = config_path
         self.text_mode = False
         self.pending = False   # Seldon attend un oui / non sur son entrée standard
+        self.ready = False     # a déjà écrit : ses signaux sont en place, le bouton micro peut servir
         self._partial = ""
         self._last_color: str | None = None
         self.process = QProcess(self)
@@ -58,6 +61,8 @@ class RunnerPanel(QWidget):
         self.start_btn = QPushButton("▶  Lancer", objectName="primary", toolTip="Mode vocal complet (F5)")
         self.text_btn = QPushButton("▶  Mode texte", toolTip="Clavier + console (Ctrl+F5)")
         self.stop_btn = QPushButton("■  Arrêter", toolTip="Arrêter Seldon (Maj+F5)")
+        self.mic_btn = QPushButton("🎙  Micro", checkable=True, toolTip="Couper / rétablir le micro (F6)")
+        self.mic_btn.toggled.connect(self.mute)
         clear_btn = QPushButton("Effacer")
         self.start_btn.clicked.connect(lambda: self.start(text=False))
         self.text_btn.clicked.connect(lambda: self.start(text=True))
@@ -68,6 +73,7 @@ class RunnerPanel(QWidget):
         top.addWidget(theme.caption("commande"))
         top.addWidget(self.command, 1)
         top.addWidget(clear_btn)
+        top.addWidget(self.mic_btn)
         top.addWidget(self.stop_btn)
         top.addWidget(self.text_btn)
         top.addWidget(self.start_btn)
@@ -118,6 +124,8 @@ class RunnerPanel(QWidget):
             return
         self.text_mode = text
         self.pending = False
+        self.ready = False
+        self._set_muted(False)
         args = self.arguments(text)
         self._partial = ""
         self._note(f"$ {Path(sys.executable).name} {' '.join(args)}")
@@ -139,6 +147,26 @@ class RunnerPanel(QWidget):
                 self.process.waitForFinished(1000)
         else:
             QTimer.singleShot(3000, lambda: self.running and self.process.processId() == pid and self.process.kill())
+
+    def mute(self, on: bool) -> None:
+        """Coupe (``on``) ou rétablit le micro de Seldon en mode vocal."""
+        sig = MUTE_SIGNALS[on]
+        if not (self.can_mute and sig):
+            self._set_muted(False)
+            return
+        os.kill(self.process.processId(), sig)
+        self._update()
+
+    @property
+    def can_mute(self) -> bool:
+        return self.running and self.ready and not self.text_mode and os.name == "posix"
+
+    def _set_muted(self, on: bool) -> None:
+        """Met le bouton dans l'état ``on`` sans envoyer de signal."""
+        self.mic_btn.blockSignals(True)
+        self.mic_btn.setChecked(on)
+        self.mic_btn.blockSignals(False)
+        self._update()
 
     def send(self) -> None:
         line = self.input.text()
@@ -165,6 +193,9 @@ class RunnerPanel(QWidget):
     def _read(self) -> None:
         data = self._partial + bytes(self.process.readAllStandardOutput()).decode("utf-8", "replace")
         *lines, self._partial = data.replace("\r\n", "\n").split("\n")
+        if lines and not self.ready:
+            self.ready = True
+            self._update()
         for line in lines:
             # « → piste » : suite du message d'erreur précédent, même couleur
             color = self._last_color if line.startswith("  → ") else line_color(line)
@@ -172,6 +203,8 @@ class RunnerPanel(QWidget):
             if (at := line.find(CONFIRM_TAG)) >= 0:
                 self._ask(line[at + len(CONFIRM_TAG):].removesuffix("[o/N]").strip())
                 color = theme.AMBER
+            if (at := line.find(MIC_TAG)) >= 0:   # état réel du micro, au cas où un signal serait perdu
+                self._set_muted(line[at + len(MIC_TAG):].strip().startswith("coupé"))
             self._append(line, color)
 
     def _ask(self, question: str) -> None:
@@ -189,6 +222,8 @@ class RunnerPanel(QWidget):
             self._append(self._partial, line_color(self._partial))
         self._partial = ""
         self.pending = False
+        self.ready = False
+        self._set_muted(False)
         crashed = status == QProcess.ExitStatus.CrashExit
         self._note("— Seldon arrêté" + (" (interrompu)" if crashed else f" (code {code})"))
         self._update()
@@ -221,6 +256,9 @@ class RunnerPanel(QWidget):
             "Confirmer ? « o » / « n », ou boutons Oui / Non" if self.pending
             else "Message à Seldon (mode texte) — « Nom: message » simule un locuteur"
         )
+        self.mic_btn.setVisible(not self.text_mode)
+        self.mic_btn.setEnabled(self.can_mute)
+        self.mic_btn.setText("🔇  Micro coupé" if self.mic_btn.isChecked() else "🎙  Micro")
         self.yes_btn.setVisible(self.pending)
         self.no_btn.setVisible(self.pending)
         mode = "mode texte" if self.text_mode else "mode vocal"

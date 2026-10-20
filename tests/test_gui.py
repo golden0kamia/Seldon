@@ -308,3 +308,40 @@ def test_logs_page_answers_confirmation_in_voice_mode(window, qapp, monkeypatch)
         qapp.processEvents()
     qapp.processEvents()
     assert "réponse oui" in r.log.toPlainText()
+
+
+def test_logs_page_mutes_microphone_with_signals(window, qapp, monkeypatch):
+    import os
+
+    if os.name != "posix":
+        pytest.skip("signaux POSIX")
+    from PySide6.QtCore import QDeadlineTimer
+
+    r = window.runner
+    script = ("import signal, sys, time\n"
+              "say = lambda m: print('2026 INFO seldon.stt.whisper: [micro]', m, flush=True)\n"
+              "signal.signal(signal.SIGUSR1, lambda *a: say('coupé'))\n"
+              "signal.signal(signal.SIGUSR2, lambda *a: (say('rétabli'), sys.exit(0)))\n"
+              "print('prêt', flush=True)\n"
+              "while True: time.sleep(0.01)\n")
+    monkeypatch.setattr(r, "arguments", lambda text: ["-c", script])
+    window.launch(text=False)
+    assert r.process.waitForStarted(5000)
+    assert not r.mic_btn.isHidden() and not r.mic_btn.isEnabled()   # pas encore de signaux en place
+    deadline = QDeadlineTimer(5000)
+
+    def wait(cond):
+        while not cond() and not deadline.hasExpired():
+            r.process.waitForReadyRead(50)
+            qapp.processEvents()
+        assert cond()
+
+    wait(lambda: r.ready)
+    assert r.mic_btn.isEnabled()
+    window.run_actions["mute"].trigger()               # F6
+    wait(lambda: "[micro] coupé" in r.log.toPlainText())
+    assert r.mic_btn.isChecked() and "coupé" in r.mic_btn.text()
+    r.mic_btn.click()
+    wait(lambda: not r.running)
+    assert "[micro] rétabli" in r.log.toPlainText()
+    assert not r.mic_btn.isChecked() and not r.mic_btn.isEnabled()

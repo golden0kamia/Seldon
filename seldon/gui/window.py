@@ -122,6 +122,7 @@ class MainWindow(QMainWindow):
             "start": act("▶ &Lancer (mode vocal)", lambda: self.launch(text=False), "F5"),
             "text": act("▶ Lancer en mode &texte", lambda: self.launch(text=True), "Ctrl+F5"),
             "stop": act("■ &Arrêter", self.runner.stop, "Shift+F5"),
+            "mute": act("🔇 &Couper / rétablir le micro", self.runner.mic_btn.toggle, "F6"),
         }
         for a in self.run_actions.values():
             run.addAction(a)
@@ -181,6 +182,7 @@ class MainWindow(QMainWindow):
         self.run_actions["start"].setEnabled(not running)
         self.run_actions["text"].setEnabled(not running)
         self.run_actions["stop"].setEnabled(running)
+        self.run_actions["mute"].setEnabled(running)   # sans effet tant que Seldon n'a rien écrit
         self._update_status()
 
     def _confirmation_requested(self, question: str) -> None:

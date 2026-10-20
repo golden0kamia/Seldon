@@ -14,6 +14,9 @@ phrase contenant un mot d'interruption (« stop », « attends »… ou un mot
 d'éveil) absent de ce que dit Seldon — pour ne pas réagir à son propre écho —
 le fait taire ; si elle dit autre chose (« attends, plutôt demain »), elle est
 ensuite traitée comme une prise de parole normale.
+
+Micro coupé (``mute``, bouton de la page Journal) : tout le son capté est jeté,
+y compris pendant que Seldon parle, jusqu'à ce qu'il soit rétabli.
 """
 
 from __future__ import annotations
@@ -43,6 +46,8 @@ DEFAULT_IGNORE = [
     "sous-titrage st' 501",
     "merci d'avoir regardé cette vidéo",
 ]
+
+MIC_TAG = "[micro]"   # repéré par la page Journal de l'interface (seldon/gui/runner.py)
 
 DEFAULT_INTERRUPT = ["stop", "arrête", "arrêtez", "attends", "attendez", "tais-toi", "chut", "silence", "stoppe"]
 
@@ -227,6 +232,7 @@ class WhisperSTT(STTEngine):
         self._segments: asyncio.Queue[np.ndarray | Utterance | None] | None = None
         self._barge: asyncio.Queue[np.ndarray] | None = None   # segments entendus pendant que Seldon parle
         self._paused = threading.Event()
+        self._muted = threading.Event()
         self._stopping = threading.Event()
         self._epoch = 0   # incrémenté à chaque pause : le thread VAD jette le segment en cours
         self._worker: threading.Thread | None = None
@@ -257,6 +263,8 @@ class WhisperSTT(STTEngine):
         def callback(indata, _frames, _time, status) -> None:
             if status:
                 log.debug("sounddevice : %s", status)
+            if self._muted.is_set():
+                return
             if self.barge_in or not self._paused.is_set():
                 self._frames.put(indata[:, 0].copy())
 
@@ -288,6 +296,18 @@ class WhisperSTT(STTEngine):
         with self._frames.mutex:
             self._frames.queue.clear()
         self._paused.clear()
+
+    def mute(self, on: bool) -> None:
+        if on == self._muted.is_set():
+            return
+        if on:
+            self._muted.set()
+        else:
+            with self._frames.mutex:
+                self._frames.queue.clear()
+            self._muted.clear()
+        self._epoch += 1   # le thread VAD jette le segment en cours
+        log.info("%s %s", MIC_TAG, "coupé" if on else "rétabli")
 
     # -- thread VAD -----------------------------------------------------------
 
@@ -353,7 +373,7 @@ class WhisperSTT(STTEngine):
             if isinstance(audio, Utterance):   # phrase qui a interrompu Seldon
                 yield audio
                 continue
-            if self._paused.is_set():
+            if self._paused.is_set() or self._muted.is_set():
                 continue
             text, language = await asyncio.to_thread(self.transcribe, audio)
             accepted = self.accept(text)

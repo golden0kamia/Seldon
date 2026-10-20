@@ -32,6 +32,13 @@ class STTEngine(ABC):
     def resume(self) -> None:
         """Reprend l'écoute."""
 
+    def mute(self, on: bool) -> None:
+        """Coupe (``on``) ou rétablit le micro à la demande de l'utilisateur.
+
+        Indépendant de ``pause`` : rien n'est entendu, pas même une interruption,
+        jusqu'à ``mute(False)``. Sans effet pour une source sans micro.
+        """
+
     async def interruption(self, spoken: str) -> Utterance:
         """Pendant que Seldon dit ``spoken`` (écoute en pause), attend qu'on lui coupe la parole.
 

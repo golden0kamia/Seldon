@@ -87,7 +87,10 @@ Trois pages, choisies en haut de la fenêtre :
   le journal envoie les messages à Seldon. Quand une action demande une
   confirmation (`confirm: console`), le Journal s'affiche, la question
   apparaît en ambre et les boutons **Oui** / **Non** (ou « o » / « n » dans le
-  champ) y répondent, en mode vocal comme en mode texte. Des paramètres non
+  champ) y répondent, en mode vocal comme en mode texte. En mode vocal, le
+  bouton **🎙 Micro** (F6) coupe le micro sans arrêter Seldon : plus rien
+  n'est entendu, pas même « stop », jusqu'à ce qu'on le rétablisse (signaux
+  `SIGUSR1` / `SIGUSR2` du sous-processus, Linux / macOS). Des paramètres non
   enregistrés sont proposés à l'enregistrement avant le lancement.
 
 Thème néomorphique « cassette futurism », accent vert, en variante claire ou

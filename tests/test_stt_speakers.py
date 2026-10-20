@@ -345,3 +345,42 @@ async def test_vad_thread_routes_loud_speech_to_barge_in_while_paused():
     await feed(frames(0.6, 0.03) + frames(1.0, 0.0))   # écoute normale : pas de seuil
     await stt.stop()
     assert stt._segments.qsize() == 2   # le segment + le None de fin
+
+
+async def test_mute_drops_current_and_queued_speech(caplog):
+    stt = WhisperSTT(vad="energy", energy_threshold_db=-40, silence_ms=300, min_speech_ms=100)
+    stt.vad = EnergyVAD(-40)
+    stt.transcribe = lambda audio: (f"{len(audio)}", "fr")
+    stt._segments = asyncio.Queue()
+    stt._worker = threading.Thread(target=stt._vad_loop, args=(asyncio.get_running_loop(),), daemon=True)
+    stt._worker.start()
+
+    async def feed(chunks):  # simule le callback micro (qui jette tout quand il est coupé)
+        for c in chunks:
+            if not stt._muted.is_set():
+                stt._frames.put(c)
+        while not stt._frames.empty():
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+
+    async def first():
+        async for u in stt.listen():
+            return u
+
+    await feed(frames(0.3, 0.3))                       # début de phrase...
+    with caplog.at_level("INFO"):
+        stt.mute(True)                                 # ...coupé : segment jeté
+        stt.mute(True)                                 # déjà coupé : rien de plus
+    stt._segments.put_nowait(np.zeros(SAMPLE_RATE, np.float32))   # en attente de transcription : ignoré
+    task = asyncio.create_task(first())
+    await feed(frames(0.5, 0.3) + frames(0.5, 0.0))         # micro coupé : rien n'entre
+    stt.pause()                                        # Seldon parle puis se tait : le micro reste coupé
+    stt.resume()
+    await feed(frames(0.5, 0.3) + frames(0.5, 0.0))
+    assert not task.done()
+    stt.mute(False)
+    await feed(frames(1.5, 0.3) + frames(0.5, 0.0))
+    u = await asyncio.wait_for(task, 5)
+    await stt.stop()
+    assert round(len(u.audio) / SAMPLE_RATE, 1) == 1.7
+    assert [r.message for r in caplog.records if "[micro]" in r.message] == ["[micro] coupé"]
