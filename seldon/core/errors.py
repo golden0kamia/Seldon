@@ -106,13 +106,27 @@ def describe(exc: BaseException) -> str:
     return f"{detail or 'erreur inattendue'} ({type(exc).__name__})"
 
 
-def spoken(exc: BaseException) -> str:
-    """Phrase courte à prononcer quand une prise de parole n'a pas pu être traitée."""
+def spoken(exc: BaseException, stage: str = "brain") -> str:
+    """Phrase courte à prononcer quand une prise de parole n'a pas pu être traitée.
+
+    ``stage`` : ``brain`` (le modèle de langage est en cause) ou autre (action,
+    commande… : on parle alors d'un service en général).
+    """
+    if stage == "brain":
+        return {
+            "connection": "Désolé, je n'arrive pas à joindre mon modèle de langage.",
+            "timeout": "Désolé, mon modèle de langage met trop de temps à répondre.",
+            "auth": "Désolé, l'accès à mon modèle de langage est refusé : vérifiez la clé API.",
+            "quota": "Désolé, mon modèle de langage est surchargé, réessayez dans un instant.",
+        }.get(kind(exc), "Désolé, j'ai rencontré une erreur.")
     return {
-        "connection": "Désolé, je n'arrive pas à joindre mon modèle de langage.",
-        "timeout": "Désolé, mon modèle de langage met trop de temps à répondre.",
-        "auth": "Désolé, l'accès à mon modèle de langage est refusé : vérifiez la clé API.",
-        "quota": "Désolé, mon modèle de langage est surchargé, réessayez dans un instant.",
+        "connection": "Désolé, je n'arrive pas à joindre un service dont j'ai besoin.",
+        "timeout": "Désolé, un service met trop de temps à répondre.",
+        "auth": "Désolé, l'accès à un service m'est refusé.",
+        "quota": "Désolé, un service est surchargé, réessayez dans un instant.",
+        "audio": "Désolé, j'ai un problème avec le micro ou le haut-parleur.",
+        "missing": "Désolé, il me manque un module pour faire cela.",
+        "file": "Désolé, je n'ai pas pu accéder à un fichier.",
     }.get(kind(exc), "Désolé, j'ai rencontré une erreur.")
 
 

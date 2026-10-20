@@ -12,6 +12,9 @@ travaille jamais pendant le traitement d'une prise de parole (verrou ``_busy``).
 
 Les signaux ``MUTE_SIGNALS`` (SIGUSR1 / SIGUSR2, envoyés par le bouton micro de
 la page Journal) coupent et rétablissent le micro (``STTEngine.mute``).
+
+Une erreur pendant un tour est annoncée à voix haute (``errors.spoken``) : cerveau
+injoignable, commande en échec, ou action échouée sans que le cerveau en parle.
 """
 
 from __future__ import annotations
@@ -197,6 +200,7 @@ class Assistant:
                 except Exception as e:   # une phrase ratée n'arrête pas Seldon
                     log_error(log, f"Traitement de « {utterance.text[:60]} » échoué", e)
                     await self.events.emit("error", error=e, stage="pipeline")
+                    await self._say_error(spoken(e, "pipeline"))
                 if self._stop_requested:
                     break
         finally:
@@ -247,6 +251,17 @@ class Assistant:
         finally:
             self.stt.resume()
 
+    async def _say_error(self, text: str) -> None:
+        """Prévient oralement d'une erreur ; ne lève jamais (la synthèse peut être en cause)."""
+        self.stt.pause()
+        try:
+            await self.tts.speak(text)
+            self._attend()
+        except Exception as e:
+            log_error(log, "Message d'erreur non prononcé", e)
+        finally:
+            self.stt.resume()
+
     async def process(self, utterance: Utterance) -> None:
         async with self._busy:
             await self._process(utterance)
@@ -279,6 +294,7 @@ class Assistant:
 
         ctx = ActionContext(utterance=utterance, services=self.services, confirm=self.confirm)
         spoke = False
+        failed: list[tuple[str, str]] = []   # actions en échec (nom, message)
         ack: asyncio.Task | None = None
 
         async def wait_ack() -> None:
@@ -302,6 +318,8 @@ class Assistant:
             except Exception as e:
                 log_error(log, f"Action {name} échouée", e)
                 result = ActionResult.error(describe(e))
+            if result.is_error and name != "speak":
+                failed.append((name, result.text))
             if name == "speak" and not result.is_error:
                 spoke = True
                 self._attend()
@@ -318,6 +336,9 @@ class Assistant:
                 await self.events.emit("error", error=e, stage="brain")
                 final = spoken(e)
             await wait_ack()
+            if not final and not spoke and failed:
+                # Le cerveau n'a rien dit après un échec : on prévient quand même.
+                final = f"Désolé, l'action {failed[-1][0]} a échoué."
             if final:
                 await self.events.emit("response", text=final)
                 if not spoke and "speak" in self.actions:

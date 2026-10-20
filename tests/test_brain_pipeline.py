@@ -204,3 +204,50 @@ async def test_mute_signals_reach_stt_while_running():
     await Assistant(stt, NoSpeakerId(), fake_brain([]), RecordingTTS(), [Speak()]).run()
     assert stt.muted == [True, False]
     assert signal.getsignal(signal.SIGUSR1) is signal.SIG_DFL   # gestionnaires retirés à l'arrêt
+
+
+def failing_action():
+    from seldon.actions.base import Action
+
+    class Boom(Action):
+        name, description = "boom", "échoue"
+        input_schema = {"type": "object", "properties": {}}
+
+        async def run(self, params, ctx):
+            raise ConnectionRefusedError("refusé")
+
+    return Boom()
+
+
+async def test_failed_action_announced_if_brain_stays_silent():
+    brain = fake_brain([resp("tool_use", tool("a", "boom")), resp("end_turn")])
+    a, tts = assistant(brain, [failing_action()])
+    await a.process(Utterance("fais boum"))
+    assert tts.said == ["Désolé, l'action boom a échoué."]
+
+
+async def test_brain_error_is_spoken():
+    brain = fake_brain([])
+    brain.client.messages.create = None   # TypeError à l'appel
+    a, tts = assistant(brain)
+    await a.process(Utterance("salut"))
+    assert tts.said == ["Désolé, j'ai rencontré une erreur."]
+
+
+async def test_pipeline_error_is_spoken():
+    class OneLine(TextInput):
+        async def listen(self):
+            yield Utterance("salut")
+
+    tts = RecordingTTS()
+    a = Assistant(OneLine(), NoSpeakerId(), fake_brain([]), tts, [Speak()])
+
+    async def nothing():
+        pass
+
+    async def broken(_):
+        raise ConnectionRefusedError()
+
+    a.start, a.process = nothing, broken
+    await a.run()
+    assert tts.said == ["Désolé, je n'arrive pas à joindre un service dont j'ai besoin."]

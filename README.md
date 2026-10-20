@@ -24,6 +24,12 @@ puis donne le résultat. Une seule fois par échange, et pas si le cerveau a
 déjà parlé ; `acknowledge: false` dans `config.yaml` le désactive. Pour une
 nouvelle action : attribut `acknowledgement` (ou méthode `acknowledge(params)`).
 
+Quand une erreur survient pendant un échange, Seldon le dit à voix haute
+plutôt que de rester muet : modèle de langage injoignable ou trop lent,
+commande en échec, service indisponible, ou action échouée dont le cerveau
+n'a pas parlé (« Désolé, l'action terminal a échoué. »). Le détail reste
+dans le journal.
+
 ## Installation
 
 ```bash
