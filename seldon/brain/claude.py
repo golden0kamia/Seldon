@@ -13,14 +13,13 @@ from __future__ import annotations
 import base64
 import logging
 import time
-from datetime import datetime
 from typing import Any
 
 import anthropic
 
 from seldon.actions.base import Action
 from seldon.brain.base import ActionExecutor, Brain, ends_turn
-from seldon.brain.prompts import SYSTEM_PROMPT
+from seldon.brain.prompts import SYSTEM_PROMPT, user_message
 from seldon.core.registry import register
 from seldon.core.types import ActionResult, Utterance
 
@@ -109,10 +108,8 @@ class ClaudeBrain(Brain):
         if len(self.messages) > self.max_history_messages:
             self.reset()
 
-        speaker = utterance.speaker or "inconnu"
-        header = f"[{datetime.now():%Y-%m-%d %H:%M} | locuteur : {speaker}]"
         pending, self._pending = self._pending, []
-        content = [*pending, {"type": "text", "text": f"{header}\n{utterance.text}"}]
+        content = [*pending, {"type": "text", "text": user_message(utterance)}]
 
         snapshot = len(self.messages)
         self.messages.append({"role": "user", "content": content})

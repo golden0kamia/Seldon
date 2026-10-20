@@ -1,9 +1,18 @@
-"""Orchestration : STT -> identification du locuteur -> cerveau -> actions."""
+"""Orchestration : STT -> identification du locuteur -> cerveau -> actions.
+
+Attention : si l'STT utilise des mots d'éveil, Seldon répond aux phrases qui en
+commencent par un, puis reste attentif ``follow_up_s`` secondes après chaque
+échange (on peut lui répondre sans le rappeler). Ce qui est dit hors de ces
+moments n'est pas traité, mais les dernières phrases (avec leur locuteur) sont
+transmises au cerveau la fois suivante, pour qu'il sache de quoi on parlait.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from collections import deque
 from typing import Any
 
 from seldon.actions.base import Action
@@ -18,6 +27,9 @@ from seldon.stt.base import STTEngine
 from seldon.tts.base import TTSEngine
 
 log = logging.getLogger(__name__)
+
+OVERHEARD_S = 120     # ancienneté maximale des phrases entendues transmises au cerveau
+OVERHEARD_MAX = 6
 
 
 async def console_confirm(question: str) -> bool:
@@ -52,6 +64,7 @@ class Assistant:
         events: EventBus | None = None,
         enable_commands: bool = True,
         memory: ConversationMemory | None = None,
+        follow_up_s: float = 20,
     ) -> None:
         self.stt = stt
         self.speakers = speakers
@@ -63,8 +76,13 @@ class Assistant:
         self.enable_commands = enable_commands
         self._stop_requested = False
         self.memory = memory
+        self.follow_up_s = follow_up_s
+        self._attentive_until = 0.0
+        self._overheard: deque[Utterance] = deque(maxlen=OVERHEARD_MAX)
         # Services accessibles aux actions via ctx.services ; on peut en ajouter.
-        self.services: dict[str, Any] = {"tts": tts, "stt": stt, "events": self.events, "memory": memory}
+        self.services: dict[str, Any] = {
+            "tts": tts, "stt": stt, "speakers": speakers, "events": self.events, "memory": memory,
+        }
 
     @classmethod
     def from_config(cls, cfg: Config) -> "Assistant":
@@ -86,6 +104,7 @@ class Assistant:
             confirm=CONFIRMERS[cfg.confirm],
             enable_commands=cfg.commands,
             memory=memory,
+            follow_up_s=cfg.follow_up_s,
         )
 
     def _components(self) -> list[Any]:
@@ -124,19 +143,51 @@ class Assistant:
         """Demande l'arrêt après la prise de parole en cours."""
         self._stop_requested = True
 
+    def _attend(self) -> None:
+        """Reste attentif quelques secondes (sans mot d'éveil) après un échange."""
+        self._attentive_until = time.time() + self.follow_up_s
+
+    async def _identify(self, utterance: Utterance) -> Utterance:
+        try:
+            return await self.speakers.identify(utterance)
+        except Exception as e:
+            log.exception("Identification du locuteur échouée")
+            await self.events.emit("error", error=e, stage="speakers")
+            return utterance
+
+    def _context_notes(self, utterance: Utterance) -> None:
+        """Ajoute à ``utterance`` le contexte utile au cerveau (phrases entendues, absence)."""
+        if utterance.addressed is False:
+            utterance.notes.append(
+                "dit sans mot d'éveil, juste après votre échange : réponds seulement si cela t'est adressé."
+            )
+        recent = [u for u in self._overheard if utterance.timestamp - u.timestamp <= OVERHEARD_S]
+        self._overheard.clear()
+        if recent:
+            said = " ; ".join(f"{u.speaker or 'inconnu'} : « {u.text} »" for u in recent)
+            utterance.notes.append(f"entendu juste avant, sans t'être adressé : {said}")
+        if self.memory and (note := self.memory.absence_note(utterance.speaker, utterance.timestamp)):
+            utterance.notes.append(note)
+
     async def process(self, utterance: Utterance) -> None:
+        if utterance.addressed is False and time.time() > self._attentive_until:
+            utterance = await self._identify(utterance)
+            log.debug("[%s] (non adressé) %s", utterance.speaker or "inconnu", utterance.text)
+            self._overheard.append(utterance)
+            await self.events.emit("overheard", utterance=utterance)
+            return
+        if utterance.addressed:
+            self._attend()
         if self.enable_commands and (found := commands.match(utterance.text)):
             cmd, args = found
             await self.events.emit("command", name=cmd.aliases[0], args=args)
             reply = await cmd.handler(self, args)
             if reply:
                 await self.tts.speak(reply)
+                self._attend()
             return
-        try:
-            utterance = await self.speakers.identify(utterance)
-        except Exception as e:
-            log.exception("Identification du locuteur échouée")
-            await self.events.emit("error", error=e, stage="speakers")
+        utterance = await self._identify(utterance)
+        self._context_notes(utterance)
         log.info("[%s] %s", utterance.speaker or "inconnu", utterance.text)
         await self.events.emit("utterance", utterance=utterance)
         if self.memory:
@@ -158,6 +209,7 @@ class Assistant:
                 result = ActionResult.error(f"{type(e).__name__}: {e}")
             if name == "speak" and not result.is_error:
                 spoke = True
+                self._attend()
                 if self.memory:
                     self.memory.record("assistant", params.get("text", ""))
             await self.events.emit("action.end", name=name, result=result)
@@ -176,6 +228,7 @@ class Assistant:
                     await execute("speak", {"text": final})
                 elif not spoke:
                     await self.tts.speak(final)
+                    self._attend()
                     if self.memory:
                         self.memory.record("assistant", final)
         finally:

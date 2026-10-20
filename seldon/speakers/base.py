@@ -20,6 +20,21 @@ class SpeakerIdentifier(ABC):
         """Enregistre une nouvelle voix (liste de segments float32 16 kHz)."""
         raise NotImplementedError
 
+    async def enroll_recent(self, name: str) -> int:
+        """Enregistre sous ``name`` la dernière voix inconnue entendue.
+
+        Renvoie le nombre de segments utilisés (0 si aucune voix inconnue récente).
+        """
+        raise NotImplementedError
+
+    def known_speakers(self) -> list[str]:
+        """Noms des voix enregistrées."""
+        return []
+
+    def forget(self, name: str) -> bool:
+        """Supprime la voix ``name`` ; faux si elle n'existe pas."""
+        raise NotImplementedError
+
 
 @register("speakers", "none")
 class NoSpeakerId(SpeakerIdentifier):

@@ -46,6 +46,7 @@ _BUILTINS: dict[str, dict[str, str]] = {
         "terminal": "seldon.actions.terminal",
         "camera": "seldon.actions.camera",
         "conversations": "seldon.actions.conversations",
+        "voix": "seldon.actions.voices",
     },
 }
 

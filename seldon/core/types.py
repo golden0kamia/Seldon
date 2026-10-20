@@ -14,9 +14,12 @@ class Utterance:
     text: str
     speaker: str | None = None          # nom du locuteur identifié, None si inconnu
     speaker_confidence: float = 0.0     # score de similarité 0..1
+    unknown_voice: bool = False         # voix analysée mais absente de la base de locuteurs
     language: str | None = None
     timestamp: float = field(default_factory=time.time)
     audio: Any = None                   # numpy array float32 16 kHz mono (optionnel)
+    addressed: bool | None = None       # mot d'éveil prononcé ; None si aucun n'est configuré
+    notes: list[str] = field(default_factory=list)   # contexte ajouté par Seldon pour le cerveau
 
 
 @dataclass

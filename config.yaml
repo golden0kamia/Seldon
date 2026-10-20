@@ -7,9 +7,11 @@ memory:                   # mémoire des conversations (reprise à tout moment)
   enabled: true
   dir: data/conversations
   new_after_idle_s: 600   # après 10 min de silence, nouvelle conversation (l'ancienne est gardée)
+  greet_after_s: 21600    # après 6 h d'absence, Seldon accueille la personne (null = jamais)
 
 commands: true            # commandes locales : exit, reset, actions, aide (taper /aide)
 confirm: console          # validation des actions sensibles : console | always | never
+follow_up_s: 20           # avec mots d'éveil : reste attentif 20 s après chaque échange
 
 stt:
   engine: whisper
@@ -20,13 +22,18 @@ stt:
     compute_type: int8
     vad: silero
     silence_ms: 700       # silence qui termine une phrase
-    wake_words: null      # ex. ["Seldon"] pour ne réagir qu'à l'appel
+    wake_words: null      # ex. ["Seldon"] pour ne réagir qu'à l'appel (puis follow_up_s)
+    barge_in: true        # on peut couper la parole à Seldon (« stop », « attends »…)
+    barge_in_db: -35      # niveau minimal d'une interruption ; monter si l'écho des HP le déclenche
 
 speakers:
   engine: resemblyzer     # "none" pour désactiver
   options:
     voices_dir: data/voices
     threshold: 0.75       # enregistrer une voix : python -m seldon.tools.enroll Bastien
+    unknown_memory_s: 600 # une voix inconnue reste enregistrable 10 min (action « voix »)
+    adapt_threshold: 0.85 # phrase reconnue avec ce score : affine l'empreinte (null = jamais)
+    max_samples: 40       # échantillons gardés par voix (les plus récents)
 
 brain:
   engine: llamacpp        # serveur local `llama serve` (llama.cpp). Alternatives : ollama, claude
@@ -50,6 +57,7 @@ tts:
 actions:
   - speak
   - conversations         # retrouver / reprendre une conversation passée à la voix
+  - voix                  # demande son nom à une voix inconnue et l'enregistre
   - engine: terminal
     options:
       mode: allowlist     # lecture seule sans confirmation ; sinon confirm | auto

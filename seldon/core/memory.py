@@ -14,6 +14,10 @@ le cerveau est du même type, sinon à partir de la transcription.
 Un changement demandé par le cerveau (outil ``conversations``) pendant un tour
 n'est appliqué qu'à la fin de ce tour, pour ne pas modifier son historique en
 cours de route.
+
+La mémoire sait aussi quand chaque personne a parlé pour la dernière fois :
+``absence_note()`` signale au cerveau quelqu'un qui revient après une longue
+absence (ou qui lui parle pour la première fois), pour qu'il l'accueille.
 """
 
 from __future__ import annotations
@@ -64,6 +68,15 @@ def _tokens(text: str) -> dict[str, str]:
 
 def _words(text: str) -> set[str]:
     return set(_tokens(text))
+
+
+def _duration(seconds: float) -> str:
+    """Durée approximative en toutes lettres : « 3 heures », « 2 semaines »…"""
+    for unit, size, until in (("heure", 3600, 86400), ("jour", 86400, 14 * 86400), ("semaine", 7 * 86400, 61 * 86400)):
+        if seconds < until:
+            n = max(1, round(seconds / size))
+            return f"{n} {unit}{'s' if n > 1 else ''}"
+    return f"{round(seconds / (30 * 86400))} mois"
 
 
 @dataclass
@@ -131,12 +144,15 @@ class ConversationMemory:
         dir: str = "data/conversations",
         new_after_idle_s: float = 600,
         title_chars: int = 70,
+        greet_after_s: float | None = 6 * 3600,   # absence au-delà de laquelle Seldon accueille ; None = jamais
     ) -> None:
         self.brain = brain
         self.brain_kind = brain_kind
         self.dir = Path(dir).expanduser()
         self.new_after_idle_s = new_after_idle_s
         self.title_chars = title_chars
+        self.greet_after_s = greet_after_s
+        self._last_seen: dict[str, tuple[float, str, str]] | None = None   # locuteur -> (instant, titre, id)
         self.current: Conversation | None = None
         self._pending: tuple[str, str | None] | None = None   # ("switch", id) | ("new", None)
         self._turn_start = 0   # début du tour en cours dans la transcription
@@ -185,7 +201,35 @@ class ConversationMemory:
         scored.sort(key=lambda s: (s[0], s[1]), reverse=True)
         return [c for _, _, c in scored[:limit]]
 
+    def last_seen(self, speaker: str) -> tuple[float, str, str] | None:
+        """(instant, titre, id de la conversation) de la dernière prise de parole de ``speaker``."""
+        if self._last_seen is None:
+            self._last_seen = {}
+            for conv in reversed(self.all()):   # la plus récente en dernier : elle l'emporte
+                for m in conv.transcript:
+                    if m["role"] == "user" and m.get("speaker"):
+                        self._last_seen[m["speaker"]] = (m["ts"], conv.title, conv.id)
+        return self._last_seen.get(speaker)
+
+    def absence_note(self, speaker: str | None, now: float | None = None) -> str | None:
+        """Note pour le cerveau si ``speaker`` revient après une longue absence (ou n'a jamais parlé)."""
+        if not speaker or self.greet_after_s is None:
+            return None
+        seen = self.last_seen(speaker)
+        if seen is None:
+            return f"c'est la première conversation avec {speaker} : accueille cette personne."
+        ts, title, conv_id = seen
+        away = (now or time.time()) - ts
+        if away < self.greet_after_s:
+            return None
+        return (
+            f"{speaker} te reparle après {_duration(away)} d'absence ; votre dernier échange portait sur "
+            f"« {title or 'sans titre'} » (conversation id={conv_id}). Salue cette personne naturellement ; "
+            "propose de reprendre ce sujet seulement si c'est à propos."
+        )
+
     def delete(self, conv_id: str) -> bool:
+        self._last_seen = None
         if self.current and self.current.id == conv_id:
             self.current = None
             self.brain.reset()
@@ -248,10 +292,25 @@ class ConversationMemory:
         conv.transcript.append({"role": role, "text": text, "speaker": speaker, "ts": time.time()})
         conv.updated = time.time()
         if role == "user":
+            if speaker and self._last_seen is not None:
+                self._last_seen[speaker] = (conv.updated, conv.title or text, conv.id)
             if not conv.title:
                 conv.title = text if len(text) <= self.title_chars else text[: self.title_chars].rsplit(" ", 1)[0] + "…"
             if speaker and speaker not in conv.speakers:
                 conv.speakers.append(speaker)
+
+    def name_turn_speaker(self, speaker: str) -> None:
+        """Attribue à ``speaker`` les paroles anonymes du tour en cours (voix tout juste enregistrée)."""
+        conv = self.current
+        if conv is None:
+            return
+        for m in conv.transcript[self._turn_start:]:
+            if m["role"] == "user" and not m.get("speaker"):
+                m["speaker"] = speaker
+                if self._last_seen is not None:
+                    self._last_seen[speaker] = (m["ts"], conv.title, conv.id)
+        if speaker not in conv.speakers:
+            conv.speakers.append(speaker)
 
     def end_turn(self) -> None:
         """À appeler après le tour du cerveau : sauvegarde et applique un changement demandé."""

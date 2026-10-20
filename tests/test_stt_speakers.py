@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -77,10 +78,10 @@ def test_accept_filters():
     stt = WhisperSTT(wake_words=["Seldon"])
     assert stt.accept("") is None
     assert stt.accept("Sous-titres réalisés par la communauté d'Amara.org") is None
-    assert stt.accept("Seldon") is None
-    assert stt.accept("Bonjour") is None
-    assert stt.accept("Seldon, quelle heure est-il ?") == "quelle heure est-il ?"
-    assert WhisperSTT().accept("Bonjour") == "Bonjour"
+    assert stt.accept("Seldon") == ("Seldon", True)      # simple appel
+    assert stt.accept("Bonjour") == ("Bonjour", False)   # gardé : le pipeline décide
+    assert stt.accept("Seldon, quelle heure est-il ?") == ("quelle heure est-il ?", True)
+    assert WhisperSTT().accept("Bonjour") == ("Bonjour", None)
 
 
 def test_transcribe_drops_no_speech():
@@ -196,3 +197,151 @@ def test_match_threshold():
     assert i.match(np.array([0.1, 1.0, 0, 0]))[0] == "b"
     name, score = i.match(np.array([1.0, 1.0, 0, 0]))
     assert name is None and 0.70 < score < 0.71
+
+
+# -- Voix inconnues : enregistrement à la volée ----------------------------------
+
+async def test_identify_flags_unknown_voice_without_voiceprints(ident):
+    u = await ident.identify(Utterance(text="bonjour", audio=voice(0.30)))
+    assert u.speaker is None and u.unknown_voice
+    assert len(ident.unknown) == 1
+    u = await ident.identify(Utterance(text="x", speaker="clavier"))
+    assert not u.unknown_voice
+
+
+async def test_enroll_recent_keeps_only_last_unknown_voice(ident, tmp_path):
+    await ident.enroll("Alice", [voice(0.10)])
+    for code in (0.30, 0.40, 0.30, 0.10):   # Paul, un autre inconnu, Paul, puis Alice (reconnue)
+        await ident.identify(Utterance(text="...", audio=voice(code)))
+    await ident.identify(Utterance(text="je m'appelle Paul", audio=voice(0.30)))
+    assert await ident.enroll_recent("Paul") == 3
+    assert np.load(tmp_path / "voices" / "Paul.npy").shape == (3, 256)
+    assert len(ident.unknown) == 1   # l'autre inconnu reste enregistrable
+    u = await ident.identify(Utterance(text="re", audio=voice(0.30)))
+    assert u.speaker == "Paul" and not u.unknown_voice
+
+
+async def test_enroll_recent_forgets_old_voices(ident):
+    ident.unknown_memory_s = 60
+    await ident.identify(Utterance(text="...", audio=voice(0.30), timestamp=time.time() - 120))
+    assert await ident.enroll_recent("Paul") == 0
+
+
+async def test_forget_voice(ident, tmp_path):
+    await ident.enroll("Alice", [voice(0.10)])
+    assert ident.known_speakers() == ["Alice"]
+    assert ident.forget("Alice") and not (tmp_path / "voices" / "Alice.npy").exists()
+    assert not ident.forget("Alice") and ident.known_speakers() == []
+
+
+async def test_voices_action(ident):
+    from seldon.actions.voices import Voices
+    from seldon.brain.prompts import speaker_label
+    from seldon.core.types import ActionContext
+
+    action = Voices()
+    u = await ident.identify(Utterance(text="je suis Paul", audio=voice(0.30)))
+    assert speaker_label(u) == "voix inconnue"
+    asked = []
+
+    async def confirm(q):
+        asked.append(q)
+        return True
+
+    ctx = ActionContext(utterance=u, services={"speakers": ident}, confirm=confirm)
+    r = await action.run({"operation": "enregistrer", "nom": " Paul "}, ctx)
+    assert not r.is_error and "Paul" in r.text and u.speaker == "Paul" and speaker_label(u) == "Paul"
+    assert (await action.run({"operation": "enregistrer", "nom": "Paul"}, ctx)).is_error   # plus rien à enregistrer
+    assert "Paul" in (await action.run({"operation": "lister"}, ctx)).text
+    assert not (await action.run({"operation": "oublier", "nom": "Paul"}, ctx)).is_error and asked
+    assert (await action.run({"operation": "enregistrer"}, ctx)).is_error
+    assert (await action.run({"operation": "lister"}, ActionContext())).is_error
+    assert speaker_label(Utterance(text="x")) == "inconnu"
+
+
+# -- Voix qui s'affinent avec l'usage ---------------------------------------------
+
+async def test_recognized_voice_is_refined(ident, tmp_path):
+    ident.max_samples = 3
+    await ident.enroll("Alice", [voice(0.10)])
+    await ident.enroll("Bob", [voice(0.20)])
+    now = time.time()
+    for dt in (0, 10, 70, 140, 210):   # une phrase apprise au plus par minute
+        await ident.identify(Utterance(text="...", audio=voice(0.10), timestamp=now + dt))
+    assert np.load(tmp_path / "voices" / "Alice.npy").shape == (3, 256)   # 1 + 4 apprises, 3 gardées
+    assert np.load(tmp_path / "voices" / "Bob.npy").shape == (1, 256)
+
+
+async def test_uncertain_or_disabled_refinement(ident, tmp_path):
+    await ident.enroll("Alice", [voice(0.10)])
+    ident.adapt_threshold = 1.01    # score (au plus 1) insuffisant
+    await ident.identify(Utterance(text="...", audio=voice(0.10)))
+    ident.adapt_threshold = None
+    await ident.identify(Utterance(text="...", audio=voice(0.10)))
+    assert np.load(tmp_path / "voices" / "Alice.npy").shape == (1, 256)
+
+
+def test_refinement_needs_clear_margin():
+    i = ResemblyzerID(adapt_threshold=0.8)
+    assert i._should_adapt([("a", 0.95), ("b", 0.70)], 0)
+    assert not i._should_adapt([("a", 0.95), ("b", 0.90)], 0)   # deux voix trop proches
+
+
+# -- Coupure de parole --------------------------------------------------------------
+
+def test_contains_phrase():
+    from seldon.stt.whisper import contains_phrase
+
+    assert contains_phrase("Attends, Seldon !", ["attends", "seldon", "stop"]) == ["attends", "seldon"]
+    assert contains_phrase("Tais toi.", ["tais-toi"]) == ["tais-toi"]
+    assert contains_phrase("Le stoppeur", ["stop"]) == []
+
+
+async def test_whisper_interruption_ignores_echo_and_requeues_requests():
+    stt = WhisperSTT(wake_words=["Seldon"])
+    stt._segments, stt._barge = asyncio.Queue(), asyncio.Queue()
+    heard = iter(["Il faut s'arrêter au stop.", "euh", "Attends, plutôt demain", "Stop !"])
+    stt.transcribe = lambda audio: (next(heard), "fr")
+    for _ in range(4):
+        stt._barge.put_nowait(np.zeros(10, np.float32))
+
+    spoken = "Tourne à droite au stop."
+    task = asyncio.create_task(stt.interruption(spoken))
+    await asyncio.sleep(0)   # la file est vidée au début : on la remplit ensuite
+    for _ in range(4):
+        stt._barge.put_nowait(np.zeros(10, np.float32))
+    u = await asyncio.wait_for(task, 2)
+    assert u.text == "Attends, plutôt demain" and u.addressed and u.notes
+    assert stt._segments.get_nowait() is u           # demande à traiter ensuite
+
+    stt.transcribe = lambda audio: ("Seldon, stop.", "fr")
+    task = asyncio.create_task(stt.interruption("Bonjour"))
+    await asyncio.sleep(0)
+    stt._barge.put_nowait(np.zeros(10, np.float32))
+    u = await asyncio.wait_for(task, 2)
+    assert u.text == "stop." and stt._segments.empty()   # simple « stop » : rien d'autre à traiter
+
+
+async def test_vad_thread_routes_loud_speech_to_barge_in_while_paused():
+    stt = WhisperSTT(vad="energy", energy_threshold_db=-50, barge_in_db=-20)
+    stt.vad = EnergyVAD(-50)
+    stt._segments, stt._barge = asyncio.Queue(), asyncio.Queue()
+    stt._worker = threading.Thread(target=stt._vad_loop, args=(asyncio.get_running_loop(),), daemon=True)
+    stt._worker.start()
+
+    async def feed(chunks):
+        for c in chunks:
+            stt._frames.put(c)
+        while not stt._frames.empty():
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
+
+    stt.pause()
+    await feed(frames(0.6, 0.03) + frames(0.5, 0.0))   # écho (≈ -30 dBFS) : sous le seuil
+    assert stt._barge.empty()
+    await feed(frames(0.6, 0.3) + frames(0.5, 0.0))    # voix forte (≈ -10 dBFS)
+    assert stt._barge.qsize() == 1 and stt._segments.empty()
+    stt.resume()
+    await feed(frames(0.6, 0.03) + frames(1.0, 0.0))   # écoute normale : pas de seuil
+    await stt.stop()
+    assert stt._segments.qsize() == 2   # le segment + le None de fin

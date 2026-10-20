@@ -13,14 +13,13 @@ from __future__ import annotations
 import base64
 import logging
 import time
-from datetime import datetime
 from typing import Any
 
 import httpx
 
 from seldon.actions.base import Action
 from seldon.brain.base import ActionExecutor, Brain, ends_turn
-from seldon.brain.prompts import LOCAL_RULES, SYSTEM_PROMPT, parse_arguments
+from seldon.brain.prompts import LOCAL_RULES, SYSTEM_PROMPT, parse_arguments, user_message
 from seldon.core.registry import register
 from seldon.core.types import ActionResult, Utterance
 
@@ -117,10 +116,8 @@ class LlamaCppBrain(Brain):
         if len(self.messages) > self.max_history_messages:
             self.reset()
 
-        speaker = utterance.speaker or "inconnu"
-        header = f"[{datetime.now():%Y-%m-%d %H:%M} | locuteur : {speaker}]"
         snapshot = len(self.messages)
-        self.messages.append({"role": "user", "content": f"{header}\n{utterance.text}"})
+        self.messages.append({"role": "user", "content": user_message(utterance)})
         tools = [
             {"type": "function", "function": {
                 "name": d["name"], "description": d["description"], "parameters": d["input_schema"]}}

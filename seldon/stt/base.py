@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
 from typing import AsyncIterator
 
@@ -30,3 +31,11 @@ class STTEngine(ABC):
 
     def resume(self) -> None:
         """Reprend l'écoute."""
+
+    async def interruption(self, spoken: str) -> Utterance:
+        """Pendant que Seldon dit ``spoken`` (écoute en pause), attend qu'on lui coupe la parole.
+
+        Renvoie la phrase qui l'a interrompu. Par défaut, n'arrive jamais.
+        """
+        await asyncio.Event().wait()
+        raise AssertionError("inaccessible")

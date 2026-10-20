@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Any
 
 from seldon.actions.base import Action
 from seldon.core.registry import register
 from seldon.core.types import ActionContext, ActionResult
+
+log = logging.getLogger(__name__)
 
 
 @register("actions", "speak")
@@ -28,11 +32,26 @@ class Speak(Action):
         if tts is None:
             return ActionResult.error("Aucun moteur TTS configuré.")
         stt = ctx.services.get("stt")
-        if stt is not None:
-            stt.pause()  # évite que l'assistant s'entende lui-même
-        try:
+        if stt is None:
             await tts.speak(params["text"])
+            return ActionResult(text="Prononcé.")
+
+        stt.pause()  # évite que l'assistant s'entende lui-même...
+        speaking = asyncio.create_task(tts.speak(params["text"]))
+        listening = asyncio.create_task(stt.interruption(params["text"]))   # ...sauf pour se faire couper
+        try:
+            await asyncio.wait({speaking, listening}, return_when=asyncio.FIRST_COMPLETED)
+            if listening.done() and listening.exception() is not None:
+                log.warning("Écoute des interruptions échouée : %s", listening.exception())
+            elif listening.done() and not speaking.done():
+                await tts.stop()
+                await speaking
+                return ActionResult(
+                    text=f"Interrompu par l'utilisateur (« {listening.result().text} ») : "
+                    "la fin de ta phrase n'a pas été entendue."
+                )
+            await speaking
         finally:
-            if stt is not None:
-                stt.resume()
+            listening.cancel()
+            stt.resume()
         return ActionResult(text="Prononcé.")

@@ -4,6 +4,16 @@ Un thread de capture découpe le flux micro (16 kHz mono float32) en trames
 de 32 ms, les passe au VAD (Silero, fourni avec faster-whisper, ou un simple
 seuil d'énergie) et pousse chaque prise de parole terminée dans une file
 asyncio. ``listen()`` transcrit ensuite chaque segment dans un thread.
+
+Avec des mots d'éveil, chaque phrase est marquée ``addressed`` (mot d'éveil
+prononcé ou non) ; c'est le pipeline qui décide d'y répondre.
+
+Coupure de parole (``barge_in``) : pendant que Seldon parle, l'écoute est en
+pause mais le VAD continue sur les sons assez forts (``barge_in_db``). Une
+phrase contenant un mot d'interruption (« stop », « attends »… ou un mot
+d'éveil) absent de ce que dit Seldon — pour ne pas réagir à son propre écho —
+le fait taire ; si elle dit autre chose (« attends, plutôt demain »), elle est
+ensuite traitée comme une prise de parole normale.
 """
 
 from __future__ import annotations
@@ -33,6 +43,8 @@ DEFAULT_IGNORE = [
     "sous-titrage st' 501",
     "merci d'avoir regardé cette vidéo",
 ]
+
+DEFAULT_INTERRUPT = ["stop", "arrête", "arrêtez", "attends", "attendez", "tais-toi", "chut", "silence", "stoppe"]
 
 
 class Segmenter:
@@ -142,6 +154,16 @@ def _normalize(text: str) -> str:
     return re.sub(r"[^\w' -]+", "", text.lower()).strip()
 
 
+def _level_db(frame: np.ndarray) -> float:
+    return 20 * float(np.log10(np.sqrt(np.mean(frame**2)) + 1e-10))
+
+
+def contains_phrase(text: str, phrases: list[str]) -> list[str]:
+    """Phrases (mots ou groupes de mots) présentes dans ``text``, à la casse et ponctuation près."""
+    norm = f" {' '.join(_normalize(text).replace('-', ' ').split())} "
+    return [p for p in phrases if f" {' '.join(_normalize(p).replace('-', ' ').split())} " in norm]
+
+
 def strip_wake_word(text: str, wake_words: list[str]) -> str | None:
     """Renvoie le texte sans le mot d'éveil, ou None s'il n'y en a pas."""
     norm = _normalize(text)
@@ -173,8 +195,11 @@ class WhisperSTT(STTEngine):
         max_speech_s: float = 20.0,
         pad_ms: int = 200,                 # marge audio avant/après la parole
         no_speech_threshold: float = 0.6,  # rejette les segments jugés « sans parole »
-        wake_words: list[str] | None = None,   # ex. ["Seldon"] : n'accepte que ce qui commence ainsi
+        wake_words: list[str] | None = None,   # ex. ["Seldon"] : marque les phrases qui commencent ainsi
         ignore: list[str] | None = None,   # phrases à jeter (hallucinations)
+        barge_in: bool = True,             # écoute pendant que Seldon parle, pour pouvoir l'interrompre
+        barge_in_db: float = -35.0,        # niveau minimal (dBFS) d'une interruption (au-dessus de l'écho)
+        interrupt_words: list[str] | None = None,   # défaut : stop, attends, tais-toi… (+ mots d'éveil)
     ) -> None:
         self.model_name = model
         self.language = language
@@ -190,12 +215,17 @@ class WhisperSTT(STTEngine):
         self.no_speech_threshold = no_speech_threshold
         self.wake_words = wake_words or []
         self.ignore = {_normalize(s) for s in (DEFAULT_IGNORE if ignore is None else ignore)}
+        self.barge_in = barge_in
+        self.barge_in_db = barge_in_db
+        self.interrupt_words = [*(DEFAULT_INTERRUPT if interrupt_words is None else interrupt_words), *self.wake_words]
+        self.barge_segmenter = Segmenter(self.vad_threshold, silence_ms=300, min_speech_ms=200, max_speech_s=5, pad_ms=100)
 
         self.model: Any = None
         self.vad: Callable[[np.ndarray], float] | Any = None
         self._stream: Any = None
         self._frames: queue.Queue[np.ndarray] = queue.Queue()
-        self._segments: asyncio.Queue[np.ndarray | None] | None = None
+        self._segments: asyncio.Queue[np.ndarray | Utterance | None] | None = None
+        self._barge: asyncio.Queue[np.ndarray] | None = None   # segments entendus pendant que Seldon parle
         self._paused = threading.Event()
         self._stopping = threading.Event()
         self._epoch = 0   # incrémenté à chaque pause : le thread VAD jette le segment en cours
@@ -206,6 +236,7 @@ class WhisperSTT(STTEngine):
     async def start(self) -> None:
         self.model, self.vad = await asyncio.to_thread(self._load)
         self._segments = asyncio.Queue()
+        self._barge = asyncio.Queue()
         self._stopping.clear()
         loop = asyncio.get_running_loop()
         self._worker = threading.Thread(target=self._vad_loop, args=(loop,), name="seldon-vad", daemon=True)
@@ -226,7 +257,7 @@ class WhisperSTT(STTEngine):
         def callback(indata, _frames, _time, status) -> None:
             if status:
                 log.debug("sounddevice : %s", status)
-            if not self._paused.is_set():
+            if self.barge_in or not self._paused.is_set():
                 self._frames.put(indata[:, 0].copy())
 
         self._stream = sd.InputStream(
@@ -267,18 +298,27 @@ class WhisperSTT(STTEngine):
                 block = self._frames.get(timeout=0.1)
             except queue.Empty:
                 continue
-            if epoch != self._epoch or self._paused.is_set():
+            paused = self._paused.is_set()
+            if epoch != self._epoch:
                 epoch, pending = self._epoch, np.zeros(0, dtype=np.float32)
                 self.segmenter.reset()
+                self.barge_segmenter.reset()
                 self.vad.reset()
-                if self._paused.is_set():
-                    continue
+            if paused and not (self.barge_in and self._barge is not None):
+                continue
             pending = np.concatenate([pending, block])
             while len(pending) >= FRAME:
                 frame, pending = pending[:FRAME], pending[FRAME:]
-                segment = self.segmenter.push(frame, self.vad(frame))
+                prob = self.vad(frame)
+                if not paused:
+                    segment = self.segmenter.push(frame, prob)
+                    if segment is not None:
+                        loop.call_soon_threadsafe(self._segments.put_nowait, segment)
+                    continue
+                # Seldon parle : seuls les sons plus forts que son écho comptent.
+                segment = self.barge_segmenter.push(frame, prob if _level_db(frame) >= self.barge_in_db else 0.0)
                 if segment is not None:
-                    loop.call_soon_threadsafe(self._segments.put_nowait, segment)
+                    loop.call_soon_threadsafe(self._barge.put_nowait, segment)
 
     # -- transcription --------------------------------------------------------
 
@@ -291,23 +331,60 @@ class WhisperSTT(STTEngine):
         parts = [s.text for s in segments if s.no_speech_prob < self.no_speech_threshold]
         return " ".join(p.strip() for p in parts).strip(), info.language
 
-    def accept(self, text: str) -> str | None:
-        """Filtre le texte transcrit (hallucinations, mot d'éveil). None = à ignorer."""
+    def accept(self, text: str) -> tuple[str, bool | None] | None:
+        """Filtre le texte transcrit (hallucinations) et repère le mot d'éveil.
+
+        Renvoie (texte sans le mot d'éveil, mot d'éveil prononcé ?) — None pour
+        ce dernier si aucun mot d'éveil n'est configuré —, ou None si à ignorer.
+        """
         if not text or _normalize(text) in self.ignore:
             return None
-        if self.wake_words:
-            text = strip_wake_word(text, self.wake_words)
-        return text or None
+        if not self.wake_words:
+            return text, None
+        stripped = strip_wake_word(text, self.wake_words)
+        if stripped is None:
+            return text, False
+        return stripped or text, True   # « Seldon » seul : un appel, auquel il répond
 
     async def listen(self) -> AsyncIterator[Utterance]:
         if self._segments is None:
             await self.start()
         while (audio := await self._segments.get()) is not None:
+            if isinstance(audio, Utterance):   # phrase qui a interrompu Seldon
+                yield audio
+                continue
             if self._paused.is_set():
                 continue
             text, language = await asyncio.to_thread(self.transcribe, audio)
-            text = self.accept(text)
-            if text is None:
+            accepted = self.accept(text)
+            if accepted is None:
                 log.debug("Segment ignoré (%.1f s)", len(audio) / SAMPLE_RATE)
                 continue
-            yield Utterance(text=text, language=language, audio=audio)
+            text, addressed = accepted
+            yield Utterance(text=text, language=language, audio=audio, addressed=addressed)
+
+    async def interruption(self, spoken: str) -> Utterance:
+        if not self.barge_in or self._barge is None:
+            return await super().interruption(spoken)
+        while not self._barge.empty():   # sons d'avant cette prise de parole
+            self._barge.get_nowait()
+        while True:
+            audio = await self._barge.get()
+            text, language = await asyncio.to_thread(self.transcribe, audio)
+            if not (accepted := self.accept(text)):
+                continue
+            # un mot que Seldon prononce lui-même est probablement son écho
+            words = [w for w in contains_phrase(text, self.interrupt_words) if not contains_phrase(spoken, [w])]
+            if not words:
+                log.debug("Entendu pendant la parole, ignoré : %s", text)
+                continue
+            log.info("Interrompu : %s", text)
+            utterance = Utterance(
+                text=accepted[0], language=language, audio=audio, addressed=True,
+                notes=["cette phrase t'a interrompu pendant que tu parlais"],
+            )
+            rest = _normalize(text).replace("-", " ").split()
+            interrupt = {t for w in self.interrupt_words for t in _normalize(w).replace("-", " ").split()}
+            if any(len(t) > 2 and t not in interrupt for t in rest) and self._segments is not None:
+                self._segments.put_nowait(utterance)   # elle demande autre chose : à traiter ensuite
+            return utterance

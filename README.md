@@ -100,6 +100,65 @@ quelque chose (programme hors liste, redirection vers un fichier, `find -delete`
 `systemctl restart`…) demande une confirmation au clavier. Les commandes
 dangereuses (`rm -rf /`, `mkfs`…) sont toujours refusées. Voir `config.yaml`.
 
+### Voix inconnues
+
+Seldon reconnaît les personnes à leur voix. Quand une voix n'est pas encore
+enregistrée, il répond puis demande son prénom ; dès que la personne le donne
+(ou qu'on la présente : « c'est Paul, un ami »), il enregistre sa voix à partir
+des phrases qu'elle vient de prononcer, via l'action `voix`. Pas besoin de
+passer par `seldon.tools.enroll`, qui reste utile pour une empreinte plus
+précise (phrases lues au calme). On peut aussi lui demander qui il connaît, ou
+d'oublier une voix (avec confirmation). Une voix inconnue reste
+enregistrable pendant `unknown_memory_s` (10 min par défaut) ; retirer `voix`
+de `actions` désactive ce comportement.
+
+Les voix **s'affinent avec l'usage** : une phrase reconnue avec certitude
+(`adapt_threshold`, et nettement devant toute autre voix) est ajoutée à
+l'empreinte de la personne, au plus une par minute (`adapt_interval_s`).
+Seuls les `max_samples` échantillons les plus récents sont gardés, si bien
+que la reconnaissance suit un changement de micro, de pièce ou un rhume.
+
+### Accueil
+
+La mémoire sait quand chacun a parlé pour la dernière fois. Après une absence
+de plus de `greet_after_s` (6 h par défaut, section `memory`), le cerveau
+reçoit une note (« Paul te reparle après 3 jours ; votre dernier échange
+portait sur … ») : Seldon salue la personne et peut proposer de reprendre le
+sujet. Il accueille aussi une voix connue qui lui parle pour la première fois.
+
+### Attention et mots d'éveil
+
+Avec des mots d'éveil (`stt.options.wake_words`, ex. `["Seldon"]`), Seldon
+répond aux phrases qui commencent par l'un d'eux (« Seldon » seul suffit pour
+l'appeler), puis reste attentif `follow_up_s` secondes (20 par défaut) après
+chaque échange : on peut lui répondre sans le rappeler. Il ne répond alors
+que si la phrase lui est adressée. Ce qui est dit hors de ces moments n'est pas
+traité, mais les dernières phrases entendues (avec leur locuteur) sont
+transmises au cerveau la fois suivante : il sait de quoi on parlait et qui a
+dit quoi. Sans mots d'éveil, tout est transmis au cerveau, qui ignore ce qui
+ne lui est visiblement pas adressé.
+
+### Couper la parole
+
+Pendant que Seldon parle, le micro reste à l'écoute des sons plus forts que
+son propre écho (`barge_in_db`, -35 dBFS par défaut). Un mot d'interruption
+(« stop », « attends », « tais-toi », « chut »… ou un mot d'éveil, liste
+`interrupt_words`) le fait taire. Un mot qu'il est lui-même en train de
+prononcer est ignoré (c'est sans doute son écho). Si la phrase demande autre
+chose (« attends, plutôt demain »), elle est traitée juste après. Avec des
+haut-parleurs forts, monter `barge_in_db` (ex. -25) ou mettre
+`barge_in: false` ; avec un casque, on peut le baisser.
+
+## À faire
+
+- **Mémoire par personne** : retenir les préférences et faits marquants de
+  chacun (« Paul est végétarien », « Bastien préfère des réponses courtes ») et
+  les rappeler au cerveau dès que sa voix est reconnue (action pour noter /
+  oublier, fichier par locuteur à côté de son empreinte vocale).
+- **Initiative** : rappels, minuteurs, alertes de fin de longue commande ;
+  Seldon prend la parole de lui-même au bon moment (file d'événements planifiés
+  injectée dans le pipeline, sans couper quelqu'un qui parle).
+
 ## Architecture
 
 | Dossier | Rôle | Contrat |

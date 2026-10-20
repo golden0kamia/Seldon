@@ -36,6 +36,7 @@ class Config:
     memory: dict[str, Any] = field(default_factory=dict)   # options de ConversationMemory + enabled
     commands: bool = True       # commandes locales : exit, reset, aide…
     confirm: str = "console"   # "console" (demande au clavier), "always" ou "never"
+    follow_up_s: float = 20     # avec mots d'éveil : écoute sans mot d'éveil après un échange
     log_level: str = "INFO"
 
     @classmethod
@@ -50,5 +51,6 @@ class Config:
             memory=dict(raw.get("memory") or {}),
             commands=raw.get("commands", True),
             confirm=raw.get("confirm", "console"),
+            follow_up_s=raw.get("follow_up_s", 20),
             log_level=raw.get("log_level", "INFO"),
         )
