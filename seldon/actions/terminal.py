@@ -4,10 +4,20 @@ Les commandes viennent de la voix puis d'un LLM : la sécurité prime.
 
 - ``denylist`` : motifs regex toujours refusés (rm -rf /, mkfs, dd vers un disque,
   extinction, fork bomb, curl | sh...), quel que soit le mode ;
-- ``mode`` : ``confirm`` (défaut, validation humaine avant chaque commande),
-  ``allowlist`` (exécution directe des commandes en lecture seule : programmes de
-  ``allowlist`` sans option ni sous-commande qui écrit, validation sinon) ou ``auto`` (tout s'exécute, à vos risques) ;
-- ``allowed_speakers`` : liste des locuteurs autorisés (``None`` = tout le monde).
+- les autres commandes sont classées en trois niveaux (``classify``) :
+
+  * **bénigne** : lecture seule (programmes de ``allowlist`` sans option ni
+    sous-commande qui écrit) ; tout le monde peut la lancer ;
+  * **standard** : peut modifier quelque chose ; acceptée d'office si la demande
+    vient d'un des ``admins``, validation humaine sinon ;
+  * **sévère** : motifs de ``severe`` (sudo, rm, kill, git push --force…) ;
+    validation humaine obligatoire, admin ou non, quel que soit le mode ;
+
+- ``mode`` : ``allowlist`` (les niveaux ci-dessus), ``confirm`` (défaut,
+  validation avant chaque commande) ou ``auto`` (tout s'exécute sauf les
+  commandes sévères, qui demandent toujours une validation) ;
+- ``allowed_speakers`` : locuteurs autorisés à lancer des commandes standard ou
+  sévères (``None`` = tout le monde) ; les commandes bénignes restent ouvertes à tous.
 
 Exemple ``config.yaml`` :
 
@@ -15,7 +25,7 @@ Exemple ``config.yaml`` :
       - engine: terminal
         options:
           mode: allowlist
-          allowed_speakers: [bastien]
+          admins: [Bastien]
           timeout: 30
 """
 
@@ -34,6 +44,7 @@ from seldon.core.registry import register
 from seldon.core.types import ActionContext, ActionResult
 
 MODES = ("confirm", "allowlist", "auto")
+BENIGN, STANDARD, SEVERE = "bénigne", "standard", "sévère"
 
 DEFAULT_DENYLIST: list[str] = [
     # rm récursif sur la racine, le home ou un répertoire système de premier niveau
@@ -54,6 +65,32 @@ DEFAULT_DENYLIST: list[str] = [
     r"\bchown\s+(?:-\S+\s+)*-\S*R\S*\s+\S+\s+/(?:\s|$)",
     r">\s*/etc/(?:passwd|shadow|sudoers|fstab)\b",
     r"\bmv\s+(?:-\S+\s+)*(?:/|~|\$HOME)\s",                   # déplacer / ou ~
+]
+
+# Début d'un nom de programme (exclut --rm, git-rm, fichier.rm ; garde /usr/bin/rm).
+_P = r"(?<![\w.-])"
+
+# Commandes sévères : validation humaine obligatoire, même pour un admin.
+DEFAULT_SEVERE: list[str] = [
+    _P + r"(?:sudo|su|doas|pkexec|runuser)\b",                        # élévation de privilèges
+    _P + r"(?:rm|shred|truncate|unlink|dd|srm)\b",                    # suppression / écrasement
+    _P + r"find\b.*\s-delete\b",
+    _P + r"(?:kill|killall|pkill|xkill)\b",
+    _P + r"(?:chown|chgrp|chattr)\b",
+    _P + r"chmod\s+(?:\S+\s+)*(?:-\w*R|--recursive)",
+    _P + r"(?:mount|umount|swapon|swapoff|losetup|cryptsetup|mkswap)\b",
+    _P + r"(?:iptables|ip6tables|nft|ufw|firewall-cmd)\b",
+    _P + r"(?:useradd|userdel|usermod|groupadd|groupdel|passwd|chpasswd|visudo)\b",
+    _P + r"(?:insmod|rmmod|modprobe\s+-r)\b",
+    _P + r"sysctl\s+(?:\S+\s+)*-w\b",
+    _P + r"crontab\s+(?:\S+\s+)*-\w*r",
+    _P + r"systemctl\s+(?:\S+\s+)*(?:stop|disable|mask|kill|isolate)\b",
+    _P + r"(?:apt|apt-get|dnf|yum|zypper|snap|flatpak|pip3?|pipx|npm)\s+(?:\S+\s+)*"
+    r"(?:remove|purge|autoremove|uninstall|erase)\b",
+    _P + r"pacman\s+(?:\S+\s+)*-R",
+    _P + r"(?:docker|podman)\s+(?:\S+\s+)*(?:rmi|prune)\b",
+    _P + r"git\s+(?:\S+\s+)*(?:push\s+.*(?:-f\b|--force)|reset\s+.*--hard|clean\s+-\w*f"
+    r"|branch\s+.*-D\b|stash\s+(?:drop|clear)|filter-(?:branch|repo))",
 ]
 
 # Programmes en lecture seule : exécutés sans confirmation en mode ``allowlist``,
@@ -151,6 +188,9 @@ class Terminal(Action):
         allowlist: list[str] | None = None,
         denylist: list[str] | None = None,
         extra_denylist: list[str] | None = None,
+        severe: list[str] | None = None,
+        extra_severe: list[str] | None = None,
+        admins: list[str] | None = None,        # commandes standard acceptées sans validation
         allowed_speakers: list[str] | None = None,
         timeout: float = 30.0,
         max_timeout: float = 300.0,
@@ -164,6 +204,9 @@ class Terminal(Action):
         self.allowlist = set(DEFAULT_ALLOWLIST if allowlist is None else allowlist)
         patterns = (DEFAULT_DENYLIST if denylist is None else denylist) + (extra_denylist or [])
         self.denylist = [re.compile(p, re.IGNORECASE | re.DOTALL) for p in patterns]
+        severe_patterns = (DEFAULT_SEVERE if severe is None else severe) + (extra_severe or [])
+        self.severe = [re.compile(p, re.IGNORECASE | re.DOTALL) for p in severe_patterns]
+        self.admins = {a.casefold() for a in admins or []}
         self.allowed_speakers = None if allowed_speakers is None else set(allowed_speakers)
         self.timeout = timeout
         self.max_timeout = max_timeout
@@ -209,10 +252,24 @@ class Terminal(Action):
             for prog, *args in commands
         )
 
-    def needs_confirmation(self, command: str) -> bool:
-        if self.mode == "auto":
+    def classify(self, command: str) -> str:
+        """Niveau de la commande : ``BENIGN``, ``STANDARD`` ou ``SEVERE``."""
+        if self.is_read_only(command):
+            return BENIGN
+        if any(p.search(command) for p in self.severe):
+            return SEVERE
+        return STANDARD
+
+    def is_admin(self, speaker: str | None) -> bool:
+        return speaker is not None and speaker.casefold() in self.admins
+
+    def needs_confirmation(self, command: str, speaker: str | None = None) -> bool:
+        level = self.classify(command)
+        if level == SEVERE or self.mode == "confirm":
+            return True
+        if self.mode == "auto" or level == BENIGN:
             return False
-        return self.mode == "confirm" or not self.is_read_only(command)
+        return not self.is_admin(speaker)
 
     async def run(self, params: dict[str, Any], ctx: ActionContext) -> ActionResult:
         command = str(params.get("command", "")).strip()
@@ -220,21 +277,24 @@ class Terminal(Action):
             return ActionResult.error("Commande vide.")
 
         speaker = ctx.utterance.speaker if ctx.utterance else None
-        if self.allowed_speakers is not None and speaker not in self.allowed_speakers:
-            who = speaker or "un locuteur non identifié"
-            return ActionResult.error(
-                f"Refusé : {who} n'est pas autorisé à exécuter des commandes sur cette machine."
-            )
         if reason := self.check(command):
             return ActionResult.error(reason)
+        level = self.classify(command)
+        if (level != BENIGN and self.allowed_speakers is not None
+                and speaker not in self.allowed_speakers):
+            who = speaker or "un locuteur non identifié"
+            return ActionResult.error(
+                f"Refusé : {who} n'est pas autorisé à exécuter cette commande ({level}) sur "
+                "cette machine ; seules les commandes en lecture seule lui sont permises."
+            )
 
         cwd = Path(params.get("cwd") or self.cwd).expanduser()
         if not cwd.is_dir():
             return ActionResult.error(f"Répertoire introuvable : {cwd}")
         timeout = min(float(params.get("timeout") or self.timeout), self.max_timeout)
 
-        if self.needs_confirmation(command):
-            question = f"Exécuter la commande « {command} » dans {cwd} ?"
+        if self.needs_confirmation(command, speaker):
+            question = f"Exécuter la commande {level} « {command} » dans {cwd} ?"
             if not await ctx.confirm(question):
                 return ActionResult.error("L'utilisateur a refusé l'exécution de la commande.")
 

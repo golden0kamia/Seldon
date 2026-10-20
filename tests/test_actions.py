@@ -158,12 +158,63 @@ async def test_allowlist_runs_without_confirm():
 
 async def test_allowed_speakers():
     t = Terminal(mode="auto", allowed_speakers=["alice"])
+    cmd = "echo x | sed s/x/y/"   # standard
     ctx, _ = make_ctx(speaker="bob")
-    assert (await t.run({"command": "echo x"}, ctx)).is_error
+    assert (await t.run({"command": cmd}, ctx)).is_error
     ctx, _ = make_ctx(speaker=None)
-    assert (await t.run({"command": "echo x"}, ctx)).is_error
+    assert (await t.run({"command": cmd}, ctx)).is_error
     ctx, _ = make_ctx(speaker="alice")
-    assert not (await t.run({"command": "echo x"}, ctx)).is_error
+    assert not (await t.run({"command": cmd}, ctx)).is_error
+    # les commandes bénignes restent ouvertes à tous
+    ctx, _ = make_ctx(speaker="bob")
+    assert not (await Terminal(mode="allowlist", allowed_speakers=["alice"]).run(
+        {"command": "echo x"}, ctx)).is_error
+
+
+@pytest.mark.parametrize("cmd,level", [
+    ("ls -la", "bénigne"),
+    ("git status", "bénigne"),
+    ("grep rm notes.txt", "bénigne"),
+    ("mkdir build", "standard"),
+    ("git commit -m x", "standard"),
+    ("systemctl restart ollama", "standard"),
+    ("docker run --rm image", "standard"),
+    ("chmod +x script.sh", "standard"),
+    ("rm fichier", "sévère"),
+    ("ls && /bin/rm -f x", "sévère"),
+    ("echo $(rm x)", "sévère"),
+    ("sudo apt update", "sévère"),
+    ("find . -name '*.log' -delete", "sévère"),
+    ("pkill firefox", "sévère"),
+    ("chmod -R 755 dossier", "sévère"),
+    ("systemctl stop ollama", "sévère"),
+    ("pip uninstall requests", "sévère"),
+    ("git push --force origin master", "sévère"),
+    ("git reset --hard HEAD~1", "sévère"),
+    ("docker system prune -a", "sévère"),
+])
+def test_classify(cmd, level):
+    assert Terminal(mode="allowlist").classify(cmd) == level
+
+
+@pytest.mark.parametrize("cmd,speaker,asks", [
+    ("ls", None, False),
+    ("mkdir x", "bob", True),          # standard, pas admin
+    ("mkdir x", None, True),
+    ("mkdir x", "Bastien", False),     # standard, admin (casse ignorée)
+    ("mkdir x", "bastien", False),
+    ("rm x", "Bastien", True),         # sévère : même l'admin confirme
+])
+def test_levels_confirmation(cmd, speaker, asks):
+    assert Terminal(mode="allowlist", admins=["Bastien"]).needs_confirmation(cmd, speaker) is asks
+
+
+async def test_severe_confirmed_even_in_auto(tmp_path):
+    (tmp_path / "f").write_text("x")
+    ctx, asked = make_ctx(answer=False)
+    r = await Terminal(mode="auto").run({"command": "rm f", "cwd": str(tmp_path)}, ctx)
+    assert r.is_error and len(asked) == 1 and "sévère" in asked[0]
+    assert (tmp_path / "f").exists()
 
 
 def test_terminal_tool_definition():

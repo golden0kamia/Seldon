@@ -103,11 +103,21 @@ tomates ? ») : le cerveau cherche et recharge la conversation via l'outil
 (pour ajouter une commande : décorateur `@command` dans
 `seldon/core/commands.py`). Dans l'interface, page Paramètres › Mémoire.
 
-Commandes terminal (`mode: allowlist`) : celles en lecture seule (`ls`, `grep`,
-`df`, `git status`…) s'exécutent directement ; toute commande qui peut modifier
-quelque chose (programme hors liste, redirection vers un fichier, `find -delete`,
-`systemctl restart`…) demande une confirmation au clavier. Les commandes
-dangereuses (`rm -rf /`, `mkfs`…) sont toujours refusées. Voir `config.yaml`.
+Commandes terminal (`mode: allowlist`), classées en trois niveaux :
+
+- **bénigne** — lecture seule (`ls`, `grep`, `df`, `git status`…) : s'exécute
+  directement, quel que soit le locuteur ;
+- **standard** — peut modifier quelque chose (`mkdir`, `git commit`,
+  `systemctl restart`, redirection vers un fichier…) : acceptée d'office si la
+  voix reconnue fait partie des `admins`, confirmation au clavier sinon ;
+- **sévère** — `sudo`, `rm`, `kill`, `find -delete`, `chmod -R`,
+  `systemctl stop`, désinstallations, `git push --force`, `git reset --hard`… :
+  confirmation au clavier obligatoire, même pour un admin et même en `mode: auto`
+  (motifs ajoutables via `extra_severe`).
+
+Les commandes dangereuses (`rm -rf /`, `mkfs`…) sont toujours refusées, et
+`allowed_speakers` restreint les commandes standard et sévères (les bénignes
+restent ouvertes à tous). Voir `config.yaml`.
 
 ### Voix inconnues
 

@@ -52,7 +52,7 @@ tts:
   engine: piper           # pyttsx3 en secours (espeak)
   options:
     voice: fr_FR-tom-medium   # voix masculine ; autre : fr_FR-upmc-medium + speaker_id 1 (pierre)
-    speed: 1.25            # 1.0 = normal ; 1.25 = 25 % plus rapide
+    speed: 1.15            # 1.0 = normal ; 1.25 = 25 % plus rapide
 
 actions:
   - speak
@@ -60,9 +60,10 @@ actions:
   - voix                  # demande son nom à une voix inconnue et l'enregistre
   - engine: terminal
     options:
-      mode: allowlist     # lecture seule sans confirmation ; sinon confirm | auto
+      mode: allowlist     # niveaux bénigne / standard / sévère ; sinon confirm | auto
       timeout: 30
-      allowed_speakers: null   # ex. [Bastien]
+      admins: [Bastien]   # leurs commandes standard passent sans confirmation
+      allowed_speakers: null   # ex. [Bastien] : seuls eux lancent des commandes non bénignes
   - engine: camera
     options:
       device: 0
