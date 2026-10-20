@@ -280,3 +280,31 @@ def test_logs_page_runs_program_and_streams_output(window, qapp, monkeypatch):
     assert "WARNING seldon: attention" in log and "écho bonjour" in log and "code 0" in log
     assert window.run_actions["start"].isEnabled() and not r.input.isEnabled()
     assert window.masthead.state.text() == "prêt"
+
+
+def test_logs_page_answers_confirmation_in_voice_mode(window, qapp, monkeypatch):
+    from PySide6.QtCore import QDeadlineTimer
+
+    from seldon.gui.window import LOGS_PAGE
+
+    r = window.runner
+    script = ("import sys; print('\\n[confirmation] Lancer ls ? [o/N]', flush=True); "
+              "print('réponse', sys.stdin.readline().strip(), flush=True)")
+    monkeypatch.setattr(r, "arguments", lambda text: ["-c", script])
+    window.launch(text=False)
+    window.show_page(0)
+    assert r.process.waitForStarted(5000)
+    assert not r.input.isEnabled() and r.yes_btn.isHidden()   # mode vocal : pas de saisie libre
+    deadline = QDeadlineTimer(5000)
+    while not r.pending and not deadline.hasExpired():
+        r.process.waitForReadyRead(50)
+        qapp.processEvents()
+    assert r.pending and r.input.isEnabled() and not r.yes_btn.isHidden()
+    assert window.pages.currentIndex() == LOGS_PAGE
+    r.yes_btn.click()
+    assert not r.pending and r.yes_btn.isHidden()
+    while r.running and not deadline.hasExpired():
+        r.process.waitForFinished(50)
+        qapp.processEvents()
+    qapp.processEvents()
+    assert "réponse oui" in r.log.toPlainText()

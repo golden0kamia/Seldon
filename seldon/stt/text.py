@@ -6,6 +6,7 @@ Syntaxe ``nom: message`` pour simuler un locuteur identifié.
 from __future__ import annotations
 
 import asyncio
+import sys
 from typing import AsyncIterator
 
 from seldon.core.registry import register
@@ -22,7 +23,8 @@ class TextInput(STTEngine):
     async def listen(self) -> AsyncIterator[Utterance]:
         while True:
             try:
-                line = await asyncio.to_thread(input, self.prompt)
+                # hors terminal (interface), l'invite sans retour à la ligne se collerait au log suivant
+                line = await asyncio.to_thread(input, self.prompt if sys.stdin.isatty() else "")
             except EOFError:
                 return
             line = line.strip()

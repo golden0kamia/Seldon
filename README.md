@@ -77,8 +77,11 @@ Trois pages, choisies en haut de la fenêtre :
   Lancer en mode texte (Ctrl+F5), Arrêter (Maj+F5). Le programme principal
   tourne dans un sous-processus et ses logs s'affichent en direct
   (avertissements en ambre, erreurs en rouge) ; en mode texte, le champ sous
-  le journal envoie les messages à Seldon. Des paramètres non enregistrés sont
-  proposés à l'enregistrement avant le lancement.
+  le journal envoie les messages à Seldon. Quand une action demande une
+  confirmation (`confirm: console`), le Journal s'affiche, la question
+  apparaît en ambre et les boutons **Oui** / **Non** (ou « o » / « n » dans le
+  champ) y répondent, en mode vocal comme en mode texte. Des paramètres non
+  enregistrés sont proposés à l'enregistrement avant le lancement.
 
 Thème néomorphique « cassette futurism », accent vert, en variante claire ou
 sombre (Affichage › Thème, bouton ☾/☀ ou Ctrl+Maj+L ; « Automatique » suit le

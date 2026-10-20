@@ -33,8 +33,16 @@ OVERHEARD_S = 120     # ancienneté maximale des phrases entendues transmises au
 OVERHEARD_MAX = 6
 
 
+CONFIRM_TAG = "[confirmation]"   # repéré par la page Journal de l'interface (seldon/gui/runner.py)
+
+
 async def console_confirm(question: str) -> bool:
-    answer = await asyncio.to_thread(input, f"\n[confirmation] {question} [o/N] ")
+    # Question sur une ligne complète : un lecteur ligne à ligne (l'interface) la voit aussitôt.
+    print(f"\n{CONFIRM_TAG} {question} [o/N]", flush=True)
+    try:
+        answer = await asyncio.to_thread(input)
+    except EOFError:   # pas d'entrée standard : refus
+        return False
     return answer.strip().lower() in {"o", "oui", "y", "yes"}
 
 

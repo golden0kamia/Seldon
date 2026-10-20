@@ -84,6 +84,7 @@ class MainWindow(QMainWindow):
         self.editors.current_changed.connect(self._update_status)
         self.editors.saved.connect(lambda p: self.statusBar().showMessage(f"Enregistré : {p}", 3000))
         self.runner.running_changed.connect(self._running_changed)
+        self.runner.confirmation_requested.connect(self._confirmation_requested)
 
         self._build_menus()
         self._restore(root)
@@ -181,6 +182,12 @@ class MainWindow(QMainWindow):
         self.run_actions["text"].setEnabled(not running)
         self.run_actions["stop"].setEnabled(running)
         self._update_status()
+
+    def _confirmation_requested(self, question: str) -> None:
+        """Seldon attend un oui / non : on affiche le Journal et on signale la fenêtre."""
+        self.show_page(LOGS_PAGE)
+        self.statusBar().showMessage(f"Confirmation demandée : {question}", 10000)
+        QApplication.alert(self)
 
     # --- thème ----------------------------------------------------------------
     def set_theme(self, mode: str) -> None:

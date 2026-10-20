@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QP
 from seldon.gui import theme
 
 MAX_LINES = 5000   # au-delà, les plus anciennes lignes sont oubliées
+CONFIRM_TAG = "[confirmation]"   # question posée par seldon.core.pipeline.console_confirm
 
 
 def line_color(line: str) -> str | None:
@@ -32,11 +33,13 @@ class RunnerPanel(QWidget):
     """Démarre / arrête Seldon dans un sous-processus ; stdout et stderr sont fusionnés dans le journal."""
 
     running_changed = Signal(bool)
+    confirmation_requested = Signal(str)
 
     def __init__(self, config_path: Path, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.config_path = config_path
         self.text_mode = False
+        self.pending = False   # Seldon attend un oui / non sur son entrée standard
         self._partial = ""
         self._last_color: str | None = None
         self.process = QProcess(self)
@@ -75,10 +78,21 @@ class RunnerPanel(QWidget):
         self.log.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.input = QLineEdit(placeholderText="Message à Seldon (mode texte) — « Nom: message » simule un locuteur")
         self.input.returnPressed.connect(self.send)
+        self.yes_btn = QPushButton("Oui", objectName="primary", toolTip="Autoriser l'action")
+        self.no_btn = QPushButton("Non", toolTip="Refuser l'action")
+        self.yes_btn.clicked.connect(lambda: self.answer(True))
+        self.no_btn.clicked.connect(lambda: self.answer(False))
+        bottom_row = QWidget()
+        bottom = QHBoxLayout(bottom_row)
+        bottom.setContentsMargins(0, 0, 0, 0)
+        bottom.setSpacing(theme.SPACE)
+        bottom.addWidget(self.input, 1)
+        bottom.addWidget(self.no_btn)
+        bottom.addWidget(self.yes_btn)
         card = theme.NeuCard("raised")
         card.add(theme.caption("journal"))
         card.add(self.log, 1)
-        card.add(self.input)
+        card.add(bottom_row)
 
         head = QVBoxLayout()
         head.setContentsMargins(theme.GUTTER, theme.SPACE, theme.GUTTER, 0)
@@ -103,6 +117,7 @@ class RunnerPanel(QWidget):
         if self.running:
             return
         self.text_mode = text
+        self.pending = False
         args = self.arguments(text)
         self._partial = ""
         self._note(f"$ {Path(sys.executable).name} {' '.join(args)}")
@@ -127,11 +142,25 @@ class RunnerPanel(QWidget):
 
     def send(self) -> None:
         line = self.input.text()
-        if not (self.running and self.text_mode and line.strip()):
+        if not (self.running and (self.text_mode or self.pending) and line.strip()):
             return
+        self._write(line)
+        self.input.clear()
+        if self.pending:
+            self.pending = False
+            self._update()
+
+    def answer(self, yes: bool) -> None:
+        """Répond à la demande de confirmation en cours."""
+        if not (self.running and self.pending):
+            return
+        self._write("oui" if yes else "non")
+        self.pending = False
+        self._update()
+
+    def _write(self, line: str) -> None:
         self.process.write((line + "\n").encode("utf-8"))
         self._append(f"> {line}", theme.ACCENT_HI)
-        self.input.clear()
 
     def _read(self) -> None:
         data = self._partial + bytes(self.process.readAllStandardOutput()).decode("utf-8", "replace")
@@ -140,7 +169,16 @@ class RunnerPanel(QWidget):
             # « → piste » : suite du message d'erreur précédent, même couleur
             color = self._last_color if line.startswith("  → ") else line_color(line)
             self._last_color = color
+            if (at := line.find(CONFIRM_TAG)) >= 0:
+                self._ask(line[at + len(CONFIRM_TAG):].removesuffix("[o/N]").strip())
+                color = theme.AMBER
             self._append(line, color)
+
+    def _ask(self, question: str) -> None:
+        self.pending = True
+        self._update()
+        self.input.setFocus()
+        self.confirmation_requested.emit(question)
 
     def _started(self) -> None:
         self._update()
@@ -150,6 +188,7 @@ class RunnerPanel(QWidget):
         if self._partial.strip():
             self._append(self._partial, line_color(self._partial))
         self._partial = ""
+        self.pending = False
         crashed = status == QProcess.ExitStatus.CrashExit
         self._note("— Seldon arrêté" + (" (interrompu)" if crashed else f" (code {code})"))
         self._update()
@@ -177,6 +216,12 @@ class RunnerPanel(QWidget):
         self.start_btn.setEnabled(not on)
         self.text_btn.setEnabled(not on)
         self.stop_btn.setEnabled(on)
-        self.input.setEnabled(on and self.text_mode)
+        self.input.setEnabled(on and (self.text_mode or self.pending))
+        self.input.setPlaceholderText(
+            "Confirmer ? « o » / « n », ou boutons Oui / Non" if self.pending
+            else "Message à Seldon (mode texte) — « Nom: message » simule un locuteur"
+        )
+        self.yes_btn.setVisible(self.pending)
+        self.no_btn.setVisible(self.pending)
         mode = "mode texte" if self.text_mode else "mode vocal"
         self.command.setText(f"python {' '.join(self.arguments(self.text_mode))}  ·  {mode if on else 'arrêté'}")
