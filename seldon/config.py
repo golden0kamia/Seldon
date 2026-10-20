@@ -13,6 +13,11 @@ from typing import Any
 
 import yaml
 
+from seldon.core.errors import SeldonError
+
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+CONFIRM_MODES = ("console", "always", "never")
+
 
 @dataclass
 class StageConfig:
@@ -20,10 +25,26 @@ class StageConfig:
     options: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def parse(cls, raw: Any) -> "StageConfig":
-        if isinstance(raw, str):
-            return cls(engine=raw)
-        return cls(engine=raw["engine"], options=dict(raw.get("options") or {}))
+    def parse(cls, raw: Any, where: str = "étage") -> "StageConfig":
+        if isinstance(raw, str) and raw.strip():
+            return cls(engine=raw.strip())
+        if not isinstance(raw, dict):
+            raise SeldonError(
+                f"Section « {where} » invalide : {raw!r}",
+                "attendu un nom de moteur (ex. « piper ») ou {engine: <nom>, options: {...}}",
+            )
+        engine = raw.get("engine")
+        if not isinstance(engine, str) or not engine.strip():
+            raise SeldonError(f"Section « {where} » : clé « engine » manquante ou vide",
+                              "ex. engine: piper")
+        options = raw.get("options") or {}
+        if not isinstance(options, dict):
+            raise SeldonError(f"Section « {where} » : « options » doit être une liste de clés: valeurs, pas {options!r}")
+        unknown = set(raw) - {"engine", "options"}
+        if unknown:
+            raise SeldonError(f"Section « {where} » : clé(s) inattendue(s) {', '.join(sorted(map(str, unknown)))}",
+                              "les réglages du moteur vont sous « options: »")
+        return cls(engine=engine.strip(), options=dict(options))
 
 
 @dataclass
@@ -41,16 +62,53 @@ class Config:
 
     @classmethod
     def load(cls, path: str | Path) -> "Config":
-        raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+        path = Path(path)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            raise SeldonError(f"Fichier de configuration introuvable : {path.resolve()}",
+                              "lancez Seldon depuis son dossier ou indiquez le fichier avec -c chemin/config.yaml") from None
+        except (OSError, UnicodeDecodeError) as e:
+            raise SeldonError(f"Impossible de lire {path} : {e}") from None
+        return cls.parse(text, str(path))
+
+    @classmethod
+    def parse(cls, text: str, source: str = "config.yaml") -> "Config":
+        try:
+            raw = yaml.safe_load(text) or {}
+        except yaml.YAMLError as e:
+            mark = getattr(e, "problem_mark", None)
+            where = f" (ligne {mark.line + 1}, colonne {mark.column + 1})" if mark else ""
+            problem = getattr(e, "problem", None) or str(e)
+            raise SeldonError(f"{source} : YAML invalide{where} : {problem}",
+                              "vérifiez l'indentation (espaces, pas de tabulations) et les « : »") from None
+        if not isinstance(raw, dict):
+            raise SeldonError(f"{source} : la configuration doit être une liste de clés: valeurs")
+
+        actions = raw.get("actions", ["speak"]) or []
+        if not isinstance(actions, list):
+            raise SeldonError(f"{source} : « actions » doit être une liste (lignes commençant par « - »)")
+        memory = raw.get("memory") or {}
+        if not isinstance(memory, dict):
+            raise SeldonError(f"{source} : « memory » doit contenir des clés: valeurs (enabled, dir…)")
+        confirm = raw.get("confirm", "console")
+        if confirm not in CONFIRM_MODES:
+            raise SeldonError(f"{source} : confirm « {confirm} » inconnu", f"valeurs possibles : {', '.join(CONFIRM_MODES)}")
+        log_level = str(raw.get("log_level", "INFO")).upper()
+        if log_level not in LOG_LEVELS:
+            raise SeldonError(f"{source} : log_level « {log_level} » inconnu", f"valeurs possibles : {', '.join(LOG_LEVELS)}")
+        follow_up_s = raw.get("follow_up_s", 20)
+        if isinstance(follow_up_s, bool) or not isinstance(follow_up_s, (int, float)):
+            raise SeldonError(f"{source} : follow_up_s doit être un nombre de secondes, pas {follow_up_s!r}")
         return cls(
-            stt=StageConfig.parse(raw.get("stt", "text")),
-            speakers=StageConfig.parse(raw.get("speakers", "none")),
-            brain=StageConfig.parse(raw.get("brain", "llamacpp")),
-            tts=StageConfig.parse(raw.get("tts", "console")),
-            actions=[StageConfig.parse(a) for a in raw.get("actions", ["speak"])],
-            memory=dict(raw.get("memory") or {}),
-            commands=raw.get("commands", True),
-            confirm=raw.get("confirm", "console"),
-            follow_up_s=raw.get("follow_up_s", 20),
-            log_level=raw.get("log_level", "INFO"),
+            stt=StageConfig.parse(raw.get("stt", "text"), "stt"),
+            speakers=StageConfig.parse(raw.get("speakers", "none"), "speakers"),
+            brain=StageConfig.parse(raw.get("brain", "llamacpp"), "brain"),
+            tts=StageConfig.parse(raw.get("tts", "console"), "tts"),
+            actions=[StageConfig.parse(a, f"actions[{i + 1}]") for i, a in enumerate(actions)],
+            memory=dict(memory),
+            commands=bool(raw.get("commands", True)),
+            confirm=confirm,
+            follow_up_s=follow_up_s,
+            log_level=log_level,
         )

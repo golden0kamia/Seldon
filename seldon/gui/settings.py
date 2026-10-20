@@ -20,7 +20,8 @@ from PySide6.QtWidgets import (
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.scalarstring import ScalarString
 
-from seldon.config import StageConfig
+from seldon.config import Config
+from seldon.core.errors import describe
 from seldon.gui import configdoc, theme
 from seldon.gui.plugins import MISSING, Param, PluginInfo, choices_from_comment, class_params, discover
 from seldon.gui.records import ConversationsView, RecordsView, SpeakersView
@@ -375,14 +376,9 @@ class ActionsPage(QWidget):
 def validate(text: str) -> str | None:
     """Vérifie que le YAML produit se charge comme une config Seldon ; renvoie l'erreur éventuelle."""
     try:
-        raw = yaml.safe_load(text) or {}
-        for key, _title, _cat in SECTIONS:
-            if key in raw:
-                StageConfig.parse(raw[key])
-        for a in raw.get("actions", []) or []:
-            StageConfig.parse(a)
+        Config.parse(text)
     except Exception as e:  # noqa: BLE001 — message montré tel quel
-        return f"{type(e).__name__} : {e}"
+        return describe(e)
     return None
 
 

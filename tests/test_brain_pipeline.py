@@ -127,11 +127,12 @@ async def test_api_error_rolls_back_history():
 def test_registry_and_config(tmp_path):
     from seldon.config import Config
     from seldon.core import registry
+    from seldon.core.errors import SeldonError
 
     cfg_file = tmp_path / "c.yaml"
     cfg_file.write_text("stt: text\nbrain: {engine: claude, options: {effort: medium}}\nactions: [speak]\n")
     cfg = Config.load(cfg_file)
     a = Assistant.from_config(cfg)
     assert a.brain.effort == "medium" and list(a.actions) == ["speak"]
-    with pytest.raises(KeyError):
+    with pytest.raises(SeldonError, match="moteurs disponibles"):
         registry.resolve("tts", "inexistant")

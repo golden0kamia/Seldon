@@ -10,12 +10,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import sys
 from pathlib import Path
 
 import numpy as np
 
 from seldon.config import Config, StageConfig
 from seldon.core import registry
+from seldon.core.errors import log_error
 
 SAMPLE_RATE = 16000
 
@@ -87,6 +89,9 @@ def main() -> None:
         asyncio.run(run(args))
     except KeyboardInterrupt:
         print("\nAnnulé.")
+    except Exception as e:
+        log_error(logging.getLogger("seldon.enroll"), "Enregistrement de la voix impossible", e)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

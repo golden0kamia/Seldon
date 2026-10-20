@@ -21,6 +21,7 @@ import ollama
 from seldon.actions.base import Action
 from seldon.brain.base import ActionExecutor, Brain, ends_turn
 from seldon.brain.prompts import LOCAL_RULES, SYSTEM_PROMPT, parse_arguments, user_message
+from seldon.core.errors import SeldonError
 from seldon.core.registry import register
 from seldon.core.types import ActionResult, Utterance
 
@@ -68,11 +69,9 @@ class OllamaBrain(Brain):
         try:
             await self.client.show(self.model)
         except ollama.ResponseError as e:
-            raise RuntimeError(
-                f"Modèle Ollama '{self.model}' introuvable : lancez `ollama pull {self.model}`"
-            ) from e
+            raise SeldonError(f"Modèle Ollama « {self.model} » introuvable", f"téléchargez-le : ollama pull {self.model}") from e
         except Exception as e:  # serveur injoignable (httpx.ConnectError…)
-            raise RuntimeError(f"Ollama injoignable ({self.host or 'localhost:11434'}) : lancez `ollama serve`") from e
+            raise SeldonError(f"Ollama injoignable ({self.host or 'localhost:11434'})", "lancez `ollama serve`") from e
 
     def reset(self) -> None:
         self.messages.clear()

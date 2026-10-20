@@ -20,10 +20,29 @@ import httpx
 from seldon.actions.base import Action
 from seldon.brain.base import ActionExecutor, Brain, ends_turn
 from seldon.brain.prompts import LOCAL_RULES, SYSTEM_PROMPT, parse_arguments, user_message
+from seldon.core.errors import SeldonError
 from seldon.core.registry import register
 from seldon.core.types import ActionResult, Utterance
 
 log = logging.getLogger(__name__)
+
+
+def _http_error(response: httpx.Response) -> tuple[str, str | None]:
+    """Message (et piste) pour une erreur HTTP du serveur."""
+    try:
+        detail = response.json().get("error", {})
+        detail = detail.get("message", "") if isinstance(detail, dict) else str(detail)
+    except ValueError:
+        detail = response.text
+    detail = " ".join(detail.split())[:300]
+    message = f"Le serveur llama a refusé la requête (HTTP {response.status_code}) : {detail}"
+    if "context" in detail.lower() and ("exceed" in detail.lower() or "size" in detail.lower()):
+        return message, "conversation trop longue pour le contexte du modèle : dites « nouvelle », ou lancez le serveur avec un -c plus grand"
+    if response.status_code in (401, 403):
+        return message, "vérifiez brain.options.api_key"
+    if "tool" in detail.lower() or "jinja" in detail.lower():
+        return message, "le modèle doit gérer les appels d'outils : lancez `llama serve` avec --jinja"
+    return message, None
 
 
 @register("brain", "llamacpp")
@@ -61,14 +80,23 @@ class LlamaCppBrain(Brain):
         self.client = httpx.AsyncClient(base_url=self.base_url, headers=headers, timeout=self.timeout_s)
         try:
             models = (await self.client.get("/models")).raise_for_status().json()["data"]
+        except httpx.HTTPStatusError as e:
+            raise SeldonError(f"Le serveur {self.base_url} a répondu HTTP {e.response.status_code} à /models",
+                              "base_url doit pointer vers une API compatible OpenAI (se termine souvent par /v1)") from e
         except httpx.HTTPError as e:
-            raise RuntimeError(f"Serveur llama injoignable ({self.base_url}) : lancez `llama serve`") from e
+            raise SeldonError(f"Serveur llama injoignable ({self.base_url})",
+                              "lancez-le (`llama serve …`) ou corrigez brain.options.base_url") from e
+        except (ValueError, KeyError, TypeError) as e:
+            raise SeldonError(f"Réponse inattendue de {self.base_url}/models : ce n'est pas un serveur compatible OpenAI") from e
         ids = [m["id"] for m in models]
+        if not ids:
+            raise SeldonError("Aucun modèle chargé sur le serveur llama", "lancez `llama serve` avec un modèle")
         if self.model is None:
             loaded = [m["id"] for m in models if m.get("status", {}).get("value") == "loaded"]
             self.model = (loaded or ids or [None])[0]
         if self.model not in ids:
-            raise RuntimeError(f"Modèle '{self.model}' absent du serveur llama. Disponibles : {', '.join(ids)}")
+            raise SeldonError(f"Modèle « {self.model} » absent du serveur llama",
+                              f"disponibles : {', '.join(ids)} (ou model: null pour le modèle chargé)")
         log.info("Cerveau llama.cpp : %s", self.model)
 
     async def stop(self) -> None:
@@ -108,8 +136,11 @@ class LlamaCppBrain(Brain):
             body["temperature"] = self.temperature
         response = await self.client.post("/chat/completions", json=body)
         if response.is_error:
-            raise RuntimeError(f"Serveur llama : HTTP {response.status_code} {response.text[:300]}")
-        return response.json()["choices"][0]["message"]
+            raise SeldonError(*_http_error(response))
+        try:
+            return response.json()["choices"][0]["message"]
+        except (ValueError, KeyError, IndexError, TypeError) as e:
+            raise SeldonError(f"Réponse illisible du serveur llama : {response.text[:200]}") from e
 
     async def handle(self, utterance: Utterance, actions: list[Action], execute: ActionExecutor) -> str | None:
         assert self.client is not None, "start() n'a pas été appelé"

@@ -20,6 +20,7 @@ import anthropic
 from seldon.actions.base import Action
 from seldon.brain.base import ActionExecutor, Brain, ends_turn
 from seldon.brain.prompts import SYSTEM_PROMPT, user_message
+from seldon.core.errors import SeldonError
 from seldon.core.registry import register
 from seldon.core.types import ActionResult, Utterance
 
@@ -68,7 +69,10 @@ class ClaudeBrain(Brain):
         self._pending: list[dict[str, Any]] = []   # tool_result non encore envoyés
 
     async def start(self) -> None:
-        self.client = anthropic.AsyncAnthropic(timeout=self.timeout_s)
+        try:
+            self.client = anthropic.AsyncAnthropic(timeout=self.timeout_s)
+        except anthropic.AnthropicError as e:
+            raise SeldonError("Clé API Anthropic absente", "définissez la variable ANTHROPIC_API_KEY avant de lancer Seldon") from e
 
     def reset(self) -> None:
         self.messages.clear()

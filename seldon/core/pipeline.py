@@ -19,6 +19,7 @@ from seldon.actions.base import Action
 from seldon.brain.base import Brain
 from seldon.config import Config
 from seldon.core import commands, registry
+from seldon.core.errors import SeldonError, describe, log_error, spoken
 from seldon.core.events import EventBus
 from seldon.core.memory import ConversationMemory
 from seldon.core.types import ActionContext, ActionResult, ConfirmFn, Utterance
@@ -87,14 +88,22 @@ class Assistant:
     @classmethod
     def from_config(cls, cfg: Config) -> "Assistant":
         def build(category: str, stage) -> Any:
-            return registry.create(category, stage.engine, **stage.options)
+            try:
+                return registry.create(category, stage.engine, **stage.options)
+            except SeldonError:
+                raise
+            except Exception as e:
+                raise SeldonError(f"Création du moteur {category} « {stage.engine} » impossible : {describe(e)}") from e
 
         brain = build("brain", cfg.brain)
         memory_opts = dict(cfg.memory)
-        memory = (
-            ConversationMemory(brain, cfg.brain.engine, **memory_opts)
-            if memory_opts.pop("enabled", True) else None
-        )
+        try:
+            memory = (
+                ConversationMemory(brain, cfg.brain.engine, **memory_opts)
+                if memory_opts.pop("enabled", True) else None
+            )
+        except TypeError as e:
+            raise SeldonError(f"Section « memory » invalide : {e}") from e
         return cls(
             stt=build("stt", cfg.stt),
             speakers=build("speakers", cfg.speakers),
@@ -107,33 +116,48 @@ class Assistant:
             follow_up_s=cfg.follow_up_s,
         )
 
-    def _components(self) -> list[Any]:
-        return [self.stt, self.speakers, self.brain, self.tts, *self.actions.values()]
+    def _components(self) -> list[tuple[str, Any]]:
+        return [
+            ("la reconnaissance vocale (stt)", self.stt),
+            ("l'identification des voix (speakers)", self.speakers),
+            ("le cerveau (brain)", self.brain),
+            ("la synthèse vocale (tts)", self.tts),
+            *((f"l'action « {name} »", a) for name, a in self.actions.items()),
+        ]
 
     async def start(self) -> None:
-        for component in self._components():
-            await component.start()
+        for label, component in self._components():
+            try:
+                await component.start()
+            except SeldonError as e:
+                raise SeldonError(f"Impossible de démarrer {label} : {e.message}", e.hint) from e
+            except Exception as e:
+                raise SeldonError(f"Impossible de démarrer {label} : {describe(e)}") from e
 
     async def stop(self) -> None:
         if self.memory:
             try:
                 self.memory.save()
-            except Exception:
-                log.exception("Sauvegarde de la conversation échouée")
-        for component in reversed(self._components()):
+            except Exception as e:
+                log_error(log, "Sauvegarde de la conversation échouée", e)
+        for label, component in reversed(self._components()):
             stop = getattr(component, "stop", None)
             if stop is None:
                 continue
             try:
                 await stop()
-            except Exception:
-                log.exception("Erreur à l'arrêt de %s", component)
+            except Exception as e:
+                log_error(log, f"Erreur pendant l'arrêt ({label})", e)
 
     async def run(self) -> None:
-        await self.start()
         try:
+            await self.start()
             async for utterance in self.stt.listen():
-                await self.process(utterance)
+                try:
+                    await self.process(utterance)
+                except Exception as e:   # une phrase ratée n'arrête pas Seldon
+                    log_error(log, f"Traitement de « {utterance.text[:60]} » échoué", e)
+                    await self.events.emit("error", error=e, stage="pipeline")
                 if self._stop_requested:
                     break
         finally:
@@ -151,7 +175,7 @@ class Assistant:
         try:
             return await self.speakers.identify(utterance)
         except Exception as e:
-            log.exception("Identification du locuteur échouée")
+            log_error(log, "Identification du locuteur échouée", e)
             await self.events.emit("error", error=e, stage="speakers")
             return utterance
 
@@ -205,8 +229,8 @@ class Assistant:
             try:
                 result = await action.run(params, ctx)
             except Exception as e:
-                log.exception("Action %s échouée", name)
-                result = ActionResult.error(f"{type(e).__name__}: {e}")
+                log_error(log, f"Action {name} échouée", e)
+                result = ActionResult.error(describe(e))
             if name == "speak" and not result.is_error:
                 spoke = True
                 self._attend()
@@ -219,9 +243,9 @@ class Assistant:
             try:
                 final = await self.brain.handle(utterance, list(self.actions.values()), execute)
             except Exception as e:
-                log.exception("Le cerveau a échoué")
+                log_error(log, "Le cerveau n'a pas pu répondre", e)
                 await self.events.emit("error", error=e, stage="brain")
-                final = "Désolé, j'ai rencontré une erreur."
+                final = spoken(e)
             if final:
                 await self.events.emit("response", text=final)
                 if not spoke and "speak" in self.actions:
