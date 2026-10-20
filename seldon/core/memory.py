@@ -23,6 +23,7 @@ import logging
 import time
 import unicodedata
 import uuid
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -39,10 +40,30 @@ _STOPWORDS = set(
 )
 
 
+# mots trop courants pour caractériser un sujet dans un résumé
+_FILLER = set(
+    "peux peut pouvez faire fais fait bien oui non merci bonjour salut alors aussi plus tout tous "
+    "comme mais donc sont suis avez veux voudrais quel quelle quels est-ce cela ceci voila voici "
+    "tres trop encore deja juste etre avoir dit dis dire seldon".split()
+)
+
+
+def _fold(word: str) -> str:
+    return unicodedata.normalize("NFKD", word.lower()).encode("ascii", "ignore").decode()
+
+
+def _tokens(text: str) -> dict[str, str]:
+    """Mots significatifs : forme sans accents ni majuscules -> forme d'origine (en minuscules)."""
+    out: dict[str, str] = {}
+    for word in "".join(c if c.isalnum() else " " for c in text).split():
+        key = _fold(word)
+        if len(key) > 2 and key not in _STOPWORDS:
+            out.setdefault(key, word.lower())
+    return out
+
+
 def _words(text: str) -> set[str]:
-    text = unicodedata.normalize("NFKD", text.lower()).encode("ascii", "ignore").decode()
-    return {w for w in "".join(c if c.isalnum() else " " for c in text).split()
-            if len(w) > 2 and w not in _STOPWORDS}
+    return set(_tokens(text))
 
 
 @dataclass
@@ -60,6 +81,41 @@ class Conversation:
         when = datetime.fromtimestamp(self.updated).strftime("%d/%m %H:%M")
         who = f" ({', '.join(self.speakers)})" if self.speakers else ""
         return f"{when} « {self.title or 'sans titre'} »{who}, {len(self.transcript)} messages"
+
+    def topics(self, n: int = 6) -> list[str]:
+        """Mots les plus présents dans les messages (le titre compte double)."""
+        counts: Counter[str] = Counter()
+        shown: dict[str, str] = {}
+        for text in [self.title, *(m["text"] for m in self.transcript)]:
+            tokens = {k: w for k, w in _tokens(text).items() if k not in _FILLER}
+            counts.update(tokens.keys())
+            for k, w in tokens.items():
+                shown.setdefault(k, w)
+        best = [k for k, c in counts.most_common(n) if c > 1] or [k for k, _ in counts.most_common(min(n, 3))]
+        return [shown[k] for k in best]
+
+    def summary(self, requests: int = 3, chars: int = 140) -> str:
+        """Résumé calculé localement (sans le cerveau) : période, participants, thèmes, demandes."""
+        def short(text: str) -> str:
+            text = " ".join(text.split())
+            return text if len(text) <= chars else text[:chars].rsplit(" ", 1)[0] + "…"
+
+        start, end = datetime.fromtimestamp(self.created), datetime.fromtimestamp(self.updated)
+        minutes = round((self.updated - self.created) / 60)
+        lines = [f"Le {start:%d/%m/%Y} de {start:%H:%M} à {end:%H:%M}"
+                 + (f" ({minutes} min)" if minutes else "") + f", {len(self.transcript)} messages."]
+        lines.append(f"Participants : {', '.join(self.speakers) if self.speakers else 'locuteur inconnu'}.")
+        if topics := self.topics():
+            lines.append(f"Thèmes : {', '.join(topics)}.")
+        asked = [m["text"] for m in self.transcript if m["role"] == "user"]
+        if asked:
+            lines.append("Demandes :")
+            lines += [f"• {short(t)}" for t in asked[:requests]]
+            if len(asked) > requests:
+                lines.append(f"• … et {len(asked) - requests} autre(s)")
+        if replies := [m["text"] for m in self.transcript if m["role"] == "assistant"]:
+            lines.append(f"Dernière réponse : {short(replies[-1])}")
+        return "\n".join(lines)
 
     def tail(self, n: int = 10) -> str:
         return "\n".join(
@@ -109,15 +165,7 @@ class ConversationMemory:
 
     def all(self) -> list[Conversation]:
         """Toutes les conversations, la plus récente d'abord (sans l'état du cerveau)."""
-        convs = []
-        for path in self.dir.glob("*.json") if self.dir.is_dir() else []:
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                log.warning("Conversation illisible : %s", path)
-                continue
-            data["state"] = {}
-            convs.append(Conversation(**data))
+        convs = load_conversations(self.dir)
         if self.current and self.current.transcript:
             convs = [c for c in convs if c.id != self.current.id] + [self.current]
         return sorted(convs, key=lambda c: c.updated, reverse=True)
@@ -240,6 +288,20 @@ class ConversationMemory:
         self.save()
         if old and not old.transcript:   # conversation vide après déplacement : supprimée
             self._path(old.id).unlink(missing_ok=True)
+
+
+def load_conversations(folder: str | Path) -> list[Conversation]:
+    """Conversations enregistrées dans ``folder``, la plus récente d'abord (sans l'état du cerveau)."""
+    folder = Path(folder).expanduser()
+    convs = []
+    for path in folder.glob("*.json") if folder.is_dir() else []:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["state"] = {}
+            convs.append(Conversation(**data))
+        except (OSError, json.JSONDecodeError, TypeError):
+            log.warning("Conversation illisible : %s", path)
+    return sorted(convs, key=lambda c: c.updated, reverse=True)
 
 
 def transcript_messages(transcript: list[dict[str, Any]]) -> list[dict[str, Any]]:

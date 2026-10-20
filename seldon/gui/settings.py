@@ -11,10 +11,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 import yaml
-from PySide6.QtCore import QFileSystemWatcher, Qt, QTimer, Signal
+from PySide6.QtCore import QFileSystemWatcher, QRect, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
-    QLineEdit, QListWidget, QMessageBox, QPushButton, QScrollArea, QSpinBox, QStackedWidget,
+    QLineEdit, QListWidget, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QStackedWidget,
     QToolButton, QVBoxLayout, QWidget,
 )
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
@@ -23,6 +23,7 @@ from ruamel.yaml.scalarstring import ScalarString
 from seldon.config import StageConfig
 from seldon.gui import configdoc, theme
 from seldon.gui.plugins import MISSING, Param, PluginInfo, choices_from_comment, class_params, discover
+from seldon.gui.records import ConversationsView, RecordsView, SpeakersView
 
 PACKAGE = Path(__file__).resolve().parent.parent
 
@@ -117,6 +118,8 @@ def hint_label(text: str) -> QLabel:
 class OptionsForm(QWidget):
     """Formulaire clé → valeur sur un ``CommentedMap`` (modifié en place)."""
 
+    WARNING = "⚠"
+
     def __init__(self, mapping: CommentedMap, known: dict[str, Param], on_change: Callable[[], None],
                  keys: Callable[[str], bool] | None = None, extensible: bool = True) -> None:
         super().__init__()
@@ -125,6 +128,8 @@ class OptionsForm(QWidget):
         self.extensible = extensible
         self.grid = QGridLayout(self)
         self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setHorizontalSpacing(theme.PAD)
+        self.grid.setVerticalSpacing(theme.SPACE)
         self.grid.setColumnStretch(1, 3)
         self.grid.setColumnStretch(2, 4)
         self.rebuild()
@@ -164,9 +169,11 @@ class OptionsForm(QWidget):
             choices = []   # le commentaire ne décrivait pas des valeurs possibles
         label = QLabel(key)
         label.setFont(theme.mono_font(10))
+        if self.extensible:   # place du « ⚠ » réservée : changer de moteur ne décale pas les champs
+            label.setMinimumWidth(label.fontMetrics().horizontalAdvance(f"{key} {self.WARNING}"))
         tips = [param.hint()] if param else []
         if self.known and param is None and self.extensible:
-            label.setText(f"{key} ⚠")
+            label.setText(f"{key} {self.WARNING}")
             tips.append("Option inconnue pour ce moteur (ignorée ou erreur au démarrage).")
         label.setToolTip("\n".join(t for t in tips if t))
         editor = make_editor(value, choices, lambda v, k=key: self._set(k, v))
@@ -207,6 +214,7 @@ class OptionsForm(QWidget):
         add.clicked.connect(do_add)
         box.lineEdit().returnPressed.connect(do_add)
         line = QHBoxLayout()
+        line.setSpacing(theme.SPACE)
         line.addWidget(box, 1)
         line.addWidget(add)
         line.addStretch(1)
@@ -229,18 +237,22 @@ def _engine_combo(plugins: dict[str, PluginInfo], current: str) -> QComboBox:
 class StageEditor(QWidget):
     """Moteur + options d'un étage (``{engine, options}``)."""
 
-    def __init__(self, node: CommentedMap, plugins: dict[str, PluginInfo], on_change: Callable[[], None]) -> None:
+    def __init__(self, node: CommentedMap, plugins: dict[str, PluginInfo], on_change: Callable[[], None],
+                 reserve: bool = True) -> None:
         super().__init__()
         self.node, self.plugins, self.on_change = node, plugins, on_change
+        self.reserve = reserve   # hauteur de la plus longue description : les champs restent en place
         engine = str(node.get("engine", ""))
         self.combo = _engine_combo(plugins, engine)
         self.doc = hint_label("")
         self.form = OptionsForm(node["options"], self._known(engine), on_change)
         head = QHBoxLayout()
+        head.setSpacing(theme.PAD)
         head.addWidget(theme.caption("moteur"))
         head.addWidget(self.combo, 1)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(theme.SPACE)
         lay.addLayout(head)
         lay.addWidget(self.doc)
         lay.addWidget(self.form)
@@ -253,9 +265,22 @@ class StageEditor(QWidget):
 
     def _show_doc(self, engine: str) -> None:
         info = self.plugins.get(engine)
-        comment = configdoc.comment(self.node, "engine")
         text = info.doc if info else ("Plugin externe" if ":" in engine else "Plugin inconnu")
-        self.doc.setText(text + (f"\nNote : {comment}" if comment else ""))
+        self.doc.setText(self._doc_text(text))
+        if not self.reserve:
+            self.doc.setVisible(bool(self.doc.text()))   # pas de ligne vide (et d'écart en trop) sans description
+
+    def _doc_text(self, text: str) -> str:
+        comment = configdoc.comment(self.node, "engine")
+        return text + (f"\nNote : {comment}" if comment else "")
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if self.reserve:
+            fm, width = self.doc.fontMetrics(), max(self.doc.width(), 1)
+            heights = [fm.boundingRect(QRect(0, 0, width, 10_000), Qt.TextFlag.TextWordWrap, self._doc_text(info.doc)).height()
+                       for info in self.plugins.values()]
+            self.doc.setMinimumHeight(max(heights, default=0))
 
     def _engine_changed(self, engine: str) -> None:
         engine = engine.strip()
@@ -272,6 +297,8 @@ class ActionsPage(QWidget):
         super().__init__()
         self.actions, self.plugins, self.on_change = actions, plugins, on_change
         self.lay = QVBoxLayout(self)
+        self.lay.setContentsMargins(0, 0, 0, 0)
+        self.lay.setSpacing(theme.SPACE)
         self.rebuild()
 
     def rebuild(self) -> None:
@@ -287,9 +314,10 @@ class ActionsPage(QWidget):
         self.lay.addWidget(hint_label("Outils que le cerveau peut appeler. L'ordre n'a pas d'importance."))
         for i in range(len(self.actions)):
             node = configdoc.action_entry(self.actions, i)
-            box = theme.NeuCard("inset", radius=16, padding=8)
+            box = theme.NeuCard("inset", radius=16)
             v = box.body
             tools = QHBoxLayout()
+            tools.setSpacing(theme.SPACE)
             title = QLabel(str(node.get("engine", "")))
             title.setFont(theme.label_font(10.5))
             tools.addWidget(theme.Led(10))
@@ -305,7 +333,7 @@ class ActionsPage(QWidget):
                 b.clicked.connect(slot)
                 tools.addWidget(b)
             v.addLayout(tools)
-            stage = StageEditor(node, self.plugins, self.on_change)
+            stage = StageEditor(node, self.plugins, self.on_change, reserve=False)
             stage.combo.currentTextChanged.connect(lambda t, lbl=title: lbl.setText(t))
             v.addWidget(stage)
             self.lay.addWidget(box)
@@ -317,6 +345,7 @@ class ActionsPage(QWidget):
         add = QPushButton("Ajouter l'action")
         add.clicked.connect(lambda: self._add(add_box.currentText().strip()))
         line = QHBoxLayout()
+        line.setSpacing(theme.SPACE)
         line.addWidget(add_box, 1)
         line.addWidget(add)
         line.addStretch(1)
@@ -372,8 +401,10 @@ class SettingsPanel(QWidget):
         self.doc = CommentedMap()
         self.disk_text = ""
         self.dirty = False
+        self.records: list[RecordsView] = []
 
         self.title = QLabel(objectName="path")
+        self.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)   # chemin long : rogné
         self.banner = QLabel(wordWrap=True, objectName="banner")
         self.banner.hide()
         self.save_btn = QPushButton("Enregistrer", objectName="primary")
@@ -383,7 +414,7 @@ class SettingsPanel(QWidget):
         self.revert_btn.clicked.connect(self.revert)
         yaml_btn.clicked.connect(lambda: self.open_requested.emit(self.path))
         top = QHBoxLayout()
-        top.setContentsMargins(12, 0, 12, 0)
+        top.setSpacing(theme.SPACE)
         top.addWidget(theme.caption("fichier"))
         top.addWidget(self.title, 1)
         top.addWidget(yaml_btn)
@@ -393,21 +424,26 @@ class SettingsPanel(QWidget):
         self.nav = QListWidget()
         self.pages = QStackedWidget()
         self.nav.currentRowChanged.connect(self.pages.setCurrentIndex)
-        nav_card = theme.NeuCard("raised", padding=10)
+        nav_card = theme.NeuCard("raised")
         nav_card.setFixedWidth(220)
         nav_card.add(theme.caption("sections"))
         nav_card.add(self.nav, 1)
-        pages_card = theme.NeuCard("raised", padding=14)
+        pages_card = theme.NeuCard("raised")
         pages_card.add(self.pages, 1)
         body = QHBoxLayout()
-        body.setSpacing(0)
+        body.setSpacing(0)   # les cartes portent déjà leur marge d'ombre
         body.addWidget(nav_card)
         body.addWidget(pages_card, 1)
 
+        head = QVBoxLayout()
+        head.setContentsMargins(theme.GUTTER, theme.SPACE, theme.GUTTER, 0)
+        head.setSpacing(theme.SPACE)
+        head.addLayout(top)
+        head.addWidget(self.banner)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 4, 0, 0)
-        lay.addLayout(top)
-        lay.addWidget(self.banner)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addLayout(head)
         lay.addLayout(body, 1)
 
         self.watcher = QFileSystemWatcher(self)
@@ -415,22 +451,29 @@ class SettingsPanel(QWidget):
         self.reload()
 
     # --- construction -------------------------------------------------------
-    def _page(self, title: str, widget: QWidget, intro: str = "") -> None:
+    def _page(self, title: str, widget: QWidget, intro: str = "", extra: tuple[QWidget, ...] = ()) -> None:
         inner = QWidget()
         v = QVBoxLayout(inner)
+        v.setContentsMargins(0, 0, theme.PAD, 0)   # place de la barre de défilement
+        v.setSpacing(theme.SPACE)
         head = QLabel(title.upper(), objectName="pageTitle")
         f = theme.mono_font(14)
         f.setWeight(f.Weight.Bold)
         f.setLetterSpacing(f.SpacingType.AbsoluteSpacing, 3)
         head.setFont(f)
         row = QHBoxLayout()
+        row.setSpacing(theme.PAD)
         row.addWidget(head)
         row.addWidget(theme.Stripes(48, 14))
         row.addStretch(1)
         v.addLayout(row)
         if intro:
             v.addWidget(hint_label(intro))
+        v.addSpacing(theme.SECTION - theme.SPACE)
         v.addWidget(widget)
+        for view in extra:
+            v.addSpacing(theme.SECTION - theme.SPACE)
+            v.addWidget(view)
         v.addStretch(1)
         area = QScrollArea(widgetResizable=True, frameShape=QFrame.Shape.NoFrame)
         area.setWidget(inner)
@@ -449,6 +492,7 @@ class SettingsPanel(QWidget):
         if str(self.path) not in self.watcher.files() and self.path.exists():
             self.watcher.addPath(str(self.path))
         self.nav.clear()
+        self.records = []
         while self.pages.count():
             w = self.pages.widget(0)
             self.pages.removeWidget(w)
@@ -468,10 +512,12 @@ class SettingsPanel(QWidget):
         if not isinstance(memory, CommentedMap):
             memory = self.doc["memory"] = CommentedMap(enabled=True)
         self._page("Mémoire", OptionsForm(memory, {"enabled": Param("enabled", True, "True", "bool"), **self.memory_params},
-                                          self._changed), "Conversations sauvegardées et reprise.")
+                                          self._changed), "Conversations sauvegardées et reprise.",
+                   (self._records(ConversationsView(self.conversations_dir, self.path.parent)),))
         for key, title, cat in SECTIONS:
             node = configdoc.stage(self.doc, key)
-            self._page(title, StageEditor(node, self.plugins.get(cat, {}), self._changed))
+            extra = (self._records(SpeakersView(self.voices_dir, self.conversations_dir, self.path.parent)),) if key == "speakers" else ()
+            self._page(title, StageEditor(node, self.plugins.get(cat, {}), self._changed), extra=extra)
         actions = self.doc.get("actions")
         if not isinstance(actions, CommentedSeq):
             actions = self.doc["actions"] = CommentedSeq(actions or ["speak"])
@@ -479,9 +525,34 @@ class SettingsPanel(QWidget):
         self.nav.setCurrentRow(min(row, self.nav.count() - 1))
         self._set_dirty(False)
 
+    def _records(self, view: RecordsView) -> RecordsView:
+        view.open_requested.connect(self.open_requested.emit)
+        self.records.append(view)
+        return view
+
+    # --- dossiers de données (relatifs au dossier de config.yaml) -------------
+    def _data_dir(self, value: Any, default: Any) -> Path:
+        path = Path(str(value or default)).expanduser()
+        return path if path.is_absolute() else self.path.parent / path
+
+    def conversations_dir(self) -> Path:
+        memory = self.doc.get("memory") if self.doc is not None else None
+        default = self.memory_params.get("dir")
+        return self._data_dir(memory.get("dir") if hasattr(memory, "get") else None,
+                              default.default if default else "data/conversations")
+
+    def voices_dir(self) -> Path:
+        stage = self.doc.get("speakers") if self.doc is not None else None
+        options = (stage.get("options") if hasattr(stage, "get") else None) or {}
+        param = self.plugins.get("speakers", {}).get("resemblyzer")
+        default = param.params.get("voices_dir") if param else None
+        return self._data_dir(options.get("voices_dir"), default.default if default else "data/voices")
+
     # --- état ---------------------------------------------------------------
     def _changed(self) -> None:
         self._set_dirty(configdoc.to_text(self.doc) != self.disk_text)
+        for view in self.records:
+            view.follow_folder()
 
     def _set_dirty(self, dirty: bool) -> None:
         self.save_btn.setEnabled(dirty)

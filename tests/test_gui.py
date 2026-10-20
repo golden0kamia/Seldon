@@ -167,3 +167,89 @@ def test_untitled_document_save_as(window, tmp_path, monkeypatch):
     window.save_current()
     assert target.read_text(encoding="utf-8") == "# Notes"
     assert tab.path == target.resolve() and tab.editor.language == "markdown"
+
+
+def test_voice_samples_reads_npy_header(tmp_path):
+    np = pytest.importorskip("numpy")
+    from seldon.gui.records import voice_samples
+
+    np.save(tmp_path / "Bastien.npy", np.zeros((5, 256), np.float32))
+    (tmp_path / "faux.npy").write_bytes(b"rien")
+    assert voice_samples(tmp_path / "Bastien.npy") == 5
+    assert voice_samples(tmp_path / "faux.npy") is None
+
+
+def test_speakers_and_memory_pages_list_records(window, tmp_path):
+    import json
+
+    from seldon.gui.records import ConversationsView, SpeakersView
+
+    voices, convs = tmp_path / "data" / "voices", tmp_path / "data" / "conversations"
+    voices.mkdir(parents=True)
+    convs.mkdir(parents=True)
+    (voices / "Claire.npy").write_bytes(b"")
+    (convs / "c1.json").write_text(json.dumps(dict(
+        id="c1", created=0, updated=60, brain="llamacpp", title="Lance les tests", speakers=["Claire"],
+        transcript=[{"role": "user", "text": "Lance les tests", "speaker": "Claire", "ts": 60}])), encoding="utf-8")
+    s = window.settings
+    speakers = s.findChild(SpeakersView)
+    memory = s.findChild(ConversationsView)
+    for view in (speakers, memory):
+        view.refresh()
+    assert speakers.list.item(0).text() == "Claire"
+    assert "Lance les tests" in speakers.detail.text()          # conversations de ce locuteur
+    assert memory.list.item(0).text().startswith("Lance les tests")
+    assert "Participants : Claire." in memory.detail.text()      # résumé par défaut
+    memory.modes[1].click()
+    assert "<b>Claire</b>" in memory.detail.text()               # transcription
+    opened = []
+    s.open_requested.connect(opened.append)
+    memory.open_btn.click()
+    assert opened == [convs.resolve() / "c1.json"]
+    s.doc["memory"]["dir"] = "ailleurs"                          # le dossier suit le formulaire
+    s._changed()
+    assert memory.list.count() == 0 and "ailleurs" in memory.detail.text()
+
+
+def test_tab_close_button_is_spaced_from_text_and_edge(window, tmp_path):
+    from PySide6.QtWidgets import QTabBar
+
+    from seldon.gui import theme
+
+    tab = window.editors.open_file(tmp_path / "projet" / "main.py")
+    bar = window.editors.tabs.tabBar()
+    holder = bar.tabButton(window.editors.tabs.indexOf(tab), QTabBar.ButtonPosition.RightSide)
+    assert holder.layout().contentsMargins().right() > theme.TAB_PAD   # la croix n'est plus collée au bord
+    holder.findChild(type(window.masthead.variant_btn)).click()       # la croix ferme bien l'onglet
+    assert tab not in window.editors.file_tabs()
+
+
+def test_layout_does_not_move_with_state_or_engine(window, qapp):
+    from PySide6.QtCore import QPoint
+    from PySide6.QtWidgets import QLineEdit
+
+    from seldon.gui import theme
+    from seldon.gui.settings import StageEditor
+
+    window.resize(1400, 850)
+    window.show()
+    qapp.processEvents()
+    m = window.masthead
+    where = lambda: [b.mapTo(window, QPoint(0, 0)) for b in (*m.mode_buttons, m.led, m.variant_btn)]
+    before = where()
+    m.set_state("12 modif. non enregistrée(s)", theme.AMBER)   # texte d'état plus long
+    qapp.processEvents()
+    assert where() == before
+
+    s = window.settings
+    s.nav.setCurrentRow(4)   # Cerveau
+    stage = s.pages.currentWidget().findChild(StageEditor)
+    fields = lambda: sorted((f.mapTo(window, QPoint(0, 0)).x(), f.mapTo(window, QPoint(0, 0)).y())
+                            for i in range(stage.form.grid.count())
+                            if isinstance(f := stage.form.grid.itemAt(i).widget(), QLineEdit))
+    qapp.processEvents()
+    ref = fields()
+    for engine in ("ollama", "claude", "llamacpp"):   # options inconnues de certains moteurs : « ⚠ »
+        stage.combo.setCurrentText(engine)
+        qapp.processEvents()
+        assert fields() == ref, engine

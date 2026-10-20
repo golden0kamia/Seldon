@@ -60,6 +60,12 @@ Deux pages, choisies en haut de la fenêtre :
 - **⚙ Paramètres** (Ctrl+1) : formulaire généré depuis `config.yaml` et les
   signatures des plugins (moteurs disponibles, options connues avec leur valeur
   par défaut). Les commentaires du fichier sont conservés à l'enregistrement.
+  La page **Locuteurs** liste les voix enregistrées (nom, nombre
+  d'échantillons, conversations où chacun a parlé) ; la page **Mémoire** liste
+  les conversations sauvegardées avec, pour chacune, un **résumé** (période,
+  participants, thèmes, demandes, dernière réponse — calculé localement, sans
+  le cerveau) ou la **transcription** complète. Les deux listes suivent leur
+  dossier (`voices_dir`, `memory.dir`) et se mettent à jour d'elles-mêmes.
 - **✎ Éditeur** (Ctrl+2) : arborescence des fichiers (dossier Seldon, `data/`,
   `cwd` des actions, dossiers récents ; création, renommage, corbeille) et
   éditeur à onglets, jamais vide (document « Sans titre » par défaut).
@@ -72,7 +78,10 @@ Thème néomorphique « cassette futurism », accent vert, en variante claire ou
 sombre (Affichage › Thème, bouton ☾/☀ ou Ctrl+Maj+L ; « Automatique » suit le
 thème du système). Polices Share Tech et Share Tech Mono (Google Fonts, à
 installer sur le système ; IBM Plex à défaut). Couleurs et polices dans
-`seldon/gui/theme.py`.
+`seldon/gui/theme.py`, avec les espacements communs (`SPACE`, `PAD`,
+`SECTION`, `GUTTER`) : toute l'interface s'aligne sur ces valeurs, et aucune
+sélection (état « modifié », moteur choisi, onglet actif) ne déplace les
+éléments.
 
 ### Mémoire des conversations
 
@@ -81,8 +90,9 @@ historique complet du cerveau) après chaque échange. Après 10 min de silence,
 une nouvelle conversation commence ; l'ancienne reste disponible. Pour reprendre
 un sujet, il suffit de le demander (« on reprend notre discussion sur les
 tomates ? ») : le cerveau cherche et recharge la conversation via l'outil
-`conversations`. Au clavier : `/conversations tomates` puis `/reprendre 1`. Pour en ajouter une : décorateur `@command` dans
-`seldon/core/commands.py`.
+`conversations`. Au clavier : `/conversations tomates` puis `/reprendre 1`
+(pour ajouter une commande : décorateur `@command` dans
+`seldon/core/commands.py`). Dans l'interface, page Paramètres › Mémoire.
 
 Commandes terminal (`mode: allowlist`) : celles en lecture seule (`ls`, `grep`,
 `df`, `git status`…) s'exécutent directement ; toute commande qui peut modifier
@@ -100,7 +110,7 @@ dangereuses (`rm -rf /`, `mkfs`…) sont toujours refusées. Voir `config.yaml`.
 | `seldon/actions/` | Outils du cerveau | `Action.run(params, ctx) -> ActionResult` |
 | `seldon/tts/` | Texte → parole | `TTSEngine.speak(text)` |
 | `seldon/core/` | Pipeline, registre de plugins, bus d'événements | |
-| `seldon/gui/` | Interface Qt 6 (paramètres, fichiers, éditeur, thème) | lit les plugins par AST, sans les importer |
+| `seldon/gui/` | Interface Qt 6 (paramètres, voix et conversations enregistrées, fichiers, éditeur, thème) | lit les plugins par AST, sans les importer |
 
 ### Ajouter une action
 

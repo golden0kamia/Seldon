@@ -60,7 +60,7 @@ class MainWindow(QMainWindow):
         self.masthead = theme.Masthead()
         central = QWidget(objectName="central")
         lay = QVBoxLayout(central)
-        lay.setContentsMargins(8, 0, 8, 0)
+        lay.setContentsMargins(theme.SPACE, 0, theme.SPACE, 0)
         lay.setSpacing(0)
         lay.addWidget(self.masthead)
         lay.addWidget(self.pages, 1)

@@ -68,10 +68,11 @@ class FileBrowser(QWidget):
 
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(theme.SPACE)
         top.addWidget(self.roots, 1)
         top.addWidget(up)
         top.addWidget(browse)
-        card = theme.NeuCard("raised", padding=10)
+        card = theme.NeuCard("raised")
         card.add(theme.caption("fichiers"))
         card.body.addLayout(top)
         well = card.add(theme.NeuCard("inset", radius=14, padding=4), 1)

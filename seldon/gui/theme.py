@@ -130,6 +130,15 @@ def _write_icons() -> Path:
 
 FIELD_PAD = 10   # marge intérieure gauche/droite des champs, en px
 
+# Espacements communs (px) : toute l'interface s'aligne sur ces valeurs.
+SPACE = 8        # entre deux éléments voisins (lignes, boutons, champs)
+PAD = 12         # marge intérieure des cartes
+SECTION = 16     # entre deux blocs d'une même page
+SHADOW = 9       # marge réservée autour des cartes pour leurs ombres
+GUTTER = SHADOW + PAD   # retrait des éléments posés hors carte, aligné sur le contenu des cartes
+TAB_PAD = 14     # marge gauche du texte d'un onglet, reprise entre texte, croix et bord droit
+TAB_CLOSE_GAP = 4   # marge droite du texte : Qt ajoute ~10 px avant la croix, soit TAB_PAD au total
+
 # Share Tech pour l'interface, Share Tech Mono pour le code, les valeurs et la signalétique
 UI_FAMILIES = ["Share Tech", "IBM Plex Sans Condensed", "DejaVu Sans Condensed", "Sans Serif"]
 MONO_FAMILIES = ["Share Tech Mono", "IBM Plex Mono", "DejaVu Sans Mono", "Monospace"]
@@ -235,17 +244,21 @@ QCheckBox::indicator:checked {{ border: 1px solid {ACCENT_LO};
 
 /* onglets : languettes en relief, l'actif enfoncé et éclairé */
 QTabWidget::pane {{ border: none; }}
+QTabWidget::tab-bar {{ left: {SHADOW - 4}px; }}
 QTabBar {{ qproperty-drawBase: 0; }}
-QTabBar::tab {{ {_raised()} border-radius: 11px; padding: 6px 14px; margin: 6px 4px 8px 4px; color: {MUTED}; }}
+QTabBar::tab {{ {_raised()} border-radius: 11px; padding: 6px {TAB_CLOSE_GAP}px 6px {TAB_PAD}px; margin: {SPACE}px 4px {SPACE}px 4px;
+    color: {MUTED}; }}
 QTabBar::tab:hover {{ color: {TEXT}; }}
 QTabBar::tab:selected {{ {_inset()} color: {ACCENT_TEXT}; }}
-QTabBar::close-button {{ image: {icon("close")}; subcontrol-position: right; margin-left: 6px; }}
-QTabBar::close-button:hover {{ image: {icon("close-hover")}; }}
+QToolButton#tabclose {{ background: transparent; border: none; padding: 0; min-width: 0; min-height: 0;
+    image: {icon("close")}; }}
+QToolButton#tabclose:hover {{ image: {icon("close-hover")}; }}
 
 /* listes et arborescence posées dans des cartes */
 QListWidget, QTreeView {{ background: transparent; border: none; font-size: 11.5pt;
     show-decoration-selected: 0; }}
-QListWidget::item {{ padding: 8px 12px; margin: 3px 2px; border-radius: 10px; border-left: 3px solid transparent; }}
+QListWidget::item {{ padding: {SPACE}px {PAD}px; margin: 2px 2px; border-radius: 10px;
+    border: 1px solid transparent; border-left: 3px solid transparent; }}
 QListWidget::item:hover {{ color: {ACCENT_TEXT}; }}
 QListWidget::item:selected {{ {_inset()} color: {ACCENT_TEXT}; border-left: 3px solid {ACCENT}; }}
 QTreeView::item {{ padding: 3px 2px; border-radius: 6px; }}
@@ -264,8 +277,8 @@ QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::su
 
 QSplitter::handle {{ background: transparent; width: 10px; }}
 
-QMenuBar {{ background: {BG}; padding: 4px 8px; }}
-QMenuBar::item {{ padding: 5px 12px; border-radius: 8px; background: transparent; }}
+QMenuBar {{ background: {BG}; padding: 4px {SPACE + GUTTER - PAD}px; }}
+QMenuBar::item {{ padding: 5px {PAD}px; border-radius: 8px; background: transparent; }}
 QMenuBar::item:selected {{ {_inset()} color: {ACCENT_TEXT}; }}
 QMenu {{ background: {BG_HI}; border: 1px solid {SHADOW_DARK}; border-radius: 10px; padding: 6px; }}
 QMenu::item {{ padding: 6px 22px 6px 14px; border-radius: 7px; }}
@@ -276,9 +289,9 @@ QMenu::indicator:checked {{ background: {ACCENT_HI}; border: 1px solid {ACCENT_L
 
 /* barre d'état : afficheur à phosphore */
 QStatusBar {{ background: {CRT_BG}; color: {CRT_FG}; font-family: "{mono}"; font-size: 9pt;
-    min-height: 26px; padding: 0 10px; border-top: 2px solid {SHADOW_DARK}; }}
+    min-height: 26px; padding: 0 {SPACE + SHADOW}px; border-top: 2px solid {SHADOW_DARK}; }}
 QStatusBar QToolButton {{ background: transparent; border: none; color: {CRT_FG}; }}
-QStatusBar QLabel {{ color: {CRT_FG}; padding: 0 8px; }}
+QStatusBar QLabel {{ color: {CRT_FG}; padding: 0 {PAD}px; }}
 QStatusBar::item {{ border: none; }}
 
 /* éditeur : écran cathodique */
@@ -286,7 +299,7 @@ QPlainTextEdit#code {{ background: {CRT_BG}; color: {CRT_FG}; border: none; font
     selection-background-color: {CRT_SELECT}; selection-color: #e6ffec; }}
 QPlainTextEdit#code QScrollBar::handle {{ background: {CRT_DIM}; }}
 QWidget#findbar {{ background: transparent; }}
-QLabel#banner {{ background: {AMBER}; color: #2a2520; padding: 6px 10px; border-radius: 9px; }}
+QLabel#banner {{ background: {AMBER}; color: #2a2520; padding: {SPACE}px {PAD}px; border-radius: 9px; }}
 QLabel#hint {{ color: {MUTED}; }}
 QLabel#findinfo {{ color: {WARN}; }}
 QLabel#pageTitle {{ color: {TEXT}; }}
@@ -348,22 +361,22 @@ def _rounded(rect: QRectF, radius: float) -> QPainterPath:
 class NeuCard(QFrame):
     """Carte néomorphique : ``raised`` (en relief), ``inset`` (creusée) ou ``screen`` (écran cathodique).
 
-    Les ombres douces sont précalculées dans un pixmap à chaque redimensionnement.
+    Les ombres douces sont précalculées dans un pixmap à chaque redimensionnement. Une carte
+    creusée ne déborde pas : elle n'a pas de marge d'ombre et s'aligne sur ses voisins.
     """
 
-    SHADOW = 9      # marge réservée autour de la carte pour les ombres
-
-    def __init__(self, kind: str = "raised", radius: float = 18, padding: int = 12,
+    def __init__(self, kind: str = "raised", radius: float = 18, padding: int = PAD,
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.kind, self.radius = kind, radius
+        self.margin = 0 if kind == "inset" else SHADOW
         self._cache: QPixmap | None = None
         self._cache_size = QSize()
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
-        m = self.SHADOW + padding
+        m = self.margin + padding
         self.body = QVBoxLayout(self)
         self.body.setContentsMargins(m, m, m, m)
-        self.body.setSpacing(8)
+        self.body.setSpacing(SPACE)
 
     def add(self, widget: QWidget, stretch: int = 0) -> QWidget:
         self.body.addWidget(widget, stretch)
@@ -390,7 +403,7 @@ class NeuCard(QFrame):
         pix.fill(Qt.GlobalColor.transparent)
         p = QPainter(pix)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        s = self.SHADOW
+        s = self.margin
         rect = QRectF(self.rect()).adjusted(s, s, -s, -s)
         r = self.radius
         if self.kind == "inset":
@@ -414,7 +427,7 @@ class NeuCard(QFrame):
         return pix
 
     def _paint_shadows(self, p: QPainter, rect: QRectF, r: float) -> None:
-        steps, offset = self.SHADOW, 4
+        steps, offset = SHADOW, 4
         for color, d in ((QColor(SHADOW_DARK), offset), (QColor(SHADOW_LIGHT), -offset)):
             for i in range(steps, 0, -1):
                 c = QColor(color)
@@ -505,6 +518,7 @@ class Masthead(QWidget):
     """Bandeau supérieur : nom de l'appareil, bandes de cassette, voyant d'état et bascule clair/sombre."""
 
     toggle_variant = Signal()
+    LONGEST_STATE = "99 modif. non enregistrée(s)"
     mode_changed = Signal(int)   # 0 = paramètres, 1 = éditeur
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -516,10 +530,12 @@ class Masthead(QWidget):
         name.setFont(f)
         model = caption("Assistant vocal · console de configuration · mk-1")
         self.led = Led(12)
-        self.state = caption("prêt")
+        self.state = caption(self.LONGEST_STATE)
+        self.state.setFixedWidth(self.state.sizeHint().width())   # place du texte le plus long : rien ne bouge
+        self.state.setText("prêt")
         self.mode_buttons: list[QToolButton] = []
         modes = QHBoxLayout()
-        modes.setSpacing(6)
+        modes.setSpacing(SPACE)
         for i, (text, tip) in enumerate((("⚙  PARAMÈTRES", "Réglages de config.yaml (Ctrl+1)"),
                                         ("✎  ÉDITEUR", "Fichiers et éditeur de texte (Ctrl+2)"))):
             b = QToolButton(text=text, toolTip=tip, checkable=True, autoExclusive=True, objectName="mode")
@@ -529,20 +545,23 @@ class Masthead(QWidget):
         self.mode_buttons[0].setChecked(True)
         self.variant_btn = QToolButton(toolTip="Basculer clair / sombre (Ctrl+Maj+L)")
         self.variant_btn.setFont(ui_font(11))
+        self.variant_btn.setFixedSize(30, 30)   # ☀ et ☾ n'ont pas la même largeur
         self.variant_btn.clicked.connect(self.toggle_variant.emit)
         self.theme_changed()
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(22, 8, 22, 2)
-        lay.setSpacing(14)
+        lay.setContentsMargins(GUTTER, SPACE, GUTTER, 0)
+        lay.setSpacing(SECTION)
         lay.addWidget(name)
         lay.addWidget(Stripes())
         lay.addWidget(model)
         lay.addStretch(1)
         lay.addLayout(modes)
         lay.addStretch(1)
-        lay.addWidget(self.led)
-        lay.addWidget(self.state)
-        lay.addSpacing(10)
+        state = QHBoxLayout()
+        state.setSpacing(SPACE)
+        state.addWidget(self.led)
+        state.addWidget(self.state)
+        lay.addLayout(state)
         lay.addWidget(self.variant_btn)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
 

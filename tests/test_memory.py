@@ -156,3 +156,24 @@ async def test_resume_request_turn_moves_to_target(tmp_path):
     assert [m["text"] for m in old.transcript] == ["17 fois 23", "écho 17 fois 23"]
     assert [m["content"] for m in old.state["messages"]] == ["17 fois 23", "écho 17 fois 23"]
     assert brain.messages[-1]["content"] == "écho et pour arroser le jardin ?"
+
+
+def test_summary_and_load_conversations(tmp_path):
+    from seldon.core.memory import Conversation, load_conversations
+
+    conv = Conversation(id="20261019-100000-abcd", created=1_760_860_800, updated=1_760_861_040, brain="llamacpp",
+                        title="Quelle météo demain à Lausanne ?", speakers=["Bastien"], transcript=[
+                            {"role": "user", "text": "Quelle météo demain à Lausanne ?", "speaker": "Bastien", "ts": 0},
+                            {"role": "assistant", "text": "Nuageux, 14 degrés.", "speaker": None, "ts": 0},
+                            {"role": "user", "text": "Et la météo samedi ?", "speaker": "Bastien", "ts": 0},
+                        ])
+    summary = conv.summary()
+    assert "3 messages" in summary and "Participants : Bastien." in summary
+    assert conv.topics()[0] == "météo"   # accents conservés à l'affichage
+    assert "• Et la météo samedi ?" in summary and "Dernière réponse : Nuageux, 14 degrés." in summary
+
+    (tmp_path / f"{conv.id}.json").write_text(json.dumps(conv.__dict__), encoding="utf-8")
+    (tmp_path / "abime.json").write_text("{pas du json", encoding="utf-8")
+    (tmp_path / "autre.json").write_text('{"inconnu": 1}', encoding="utf-8")
+    assert [c.title for c in load_conversations(tmp_path)] == [conv.title]
+    assert load_conversations(tmp_path / "absent") == []

@@ -13,7 +13,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
-    QTabWidget, QTextEdit, QToolButton, QVBoxLayout, QWidget,
+    QTabBar, QTabWidget, QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
 from seldon.gui import theme
@@ -340,7 +340,8 @@ class FindBar(QWidget):
         all_btn = QPushButton("Tout remplacer")
         close = QToolButton(text="✕", toolTip="Fermer (Échap)")
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(14, 2, 14, 6)
+        lay.setContentsMargins(theme.GUTTER, 0, theme.GUTTER, theme.SPACE)
+        lay.setSpacing(theme.SPACE)
         lay.addWidget(theme.caption("chercher"))
         for w in (self.find, self.case, prev_btn, next_btn, self.replace, rep_btn, all_btn, self.info):
             lay.addWidget(w)
@@ -436,6 +437,32 @@ class FindBar(QWidget):
 UNTITLED = "Sans titre"
 
 
+class TabBar(QTabBar):
+    """Onglets à croix de fermeture espacée : texte, croix et bord droit séparés du même écart.
+
+    La croix native de Qt est collée au bord de l'onglet et ses marges QSS rétrécissent
+    l'icône : on pose à la place un bouton dans un support aux marges choisies.
+    """
+
+    ICON = 12   # taille de la croix
+
+    def tabInserted(self, index: int) -> None:  # noqa: N802
+        super().tabInserted(index)
+        button = QToolButton(objectName="tabclose", toolTip="Fermer (Ctrl+W)", cursor=Qt.CursorShape.PointingHandCursor)
+        button.setFixedSize(self.ICON, self.ICON)
+        holder = QWidget()
+        lay = QHBoxLayout(holder)
+        # croix → bord : TAB_PAD, comme la marge gauche du texte (le rectangle où Qt pose le bouton
+        # inclut la marge extérieure de l'onglet, compensée par le blanc autour du tracé de la croix)
+        lay.setContentsMargins(0, 0, theme.TAB_PAD + 2, 0)
+        lay.addWidget(button)
+        button.clicked.connect(lambda: self.tabCloseRequested.emit(self._index_of(holder)))
+        self.setTabButton(index, QTabBar.ButtonPosition.RightSide, holder)
+
+    def _index_of(self, holder: QWidget) -> int:
+        return next((i for i in range(self.count()) if self.tabButton(i, QTabBar.ButtonPosition.RightSide) is holder), -1)
+
+
 class FileTab(QWidget):
     """Un fichier ouvert (ou un document « Sans titre », ``path=None``) : éditeur ou aperçu d'image."""
 
@@ -517,14 +544,15 @@ class EditorTabs(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.tabs = QTabWidget(tabsClosable=True, movable=True, documentMode=True)
+        self.tabs = QTabWidget(movable=True, documentMode=True)
+        self.tabs.setTabBar(TabBar())
         self.findbar = FindBar()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         lay.addWidget(self.tabs)
         lay.addWidget(self.findbar)
-        self.tabs.tabCloseRequested.connect(self.close_tab)
+        self.tabs.tabBar().tabCloseRequested.connect(self.close_tab)   # QTabWidget ne relaie que si tabsClosable
         self.tabs.currentChanged.connect(lambda _: self.current_changed.emit())
         self.watcher = QFileSystemWatcher(self)
         self.watcher.fileChanged.connect(self._external_change)
