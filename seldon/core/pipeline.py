@@ -5,6 +5,10 @@ commencent par un, puis reste attentif ``follow_up_s`` secondes après chaque
 échange (on peut lui répondre sans le rappeler). Ce qui est dit hors de ces
 moments n'est pas traité, mais les dernières phrases (avec leur locuteur) sont
 transmises au cerveau la fois suivante, pour qu'il sache de quoi on parlait.
+
+Avec la mémoire, une tâche de fond vérifie toutes les ``compress_every_s``
+secondes la taille des conversations et résume les plus volumineuses ; elle ne
+travaille jamais pendant le traitement d'une prise de parole (verrou ``_busy``).
 """
 
 from __future__ import annotations
@@ -90,6 +94,7 @@ class Assistant:
         self.acknowledge = acknowledge
         self._attentive_until = 0.0
         self._overheard: deque[Utterance] = deque(maxlen=OVERHEARD_MAX)
+        self._busy = asyncio.Lock()   # pris pendant un tour, et par la compression des conversations
         # Services accessibles aux actions via ctx.services ; on peut en ajouter.
         self.services: dict[str, Any] = {
             "tts": tts, "stt": stt, "speakers": speakers, "events": self.events, "memory": memory,
@@ -160,9 +165,22 @@ class Assistant:
             except Exception as e:
                 log_error(log, f"Erreur pendant l'arrêt ({label})", e)
 
+    async def _compress_periodically(self) -> None:
+        """Résume régulièrement le début des conversations trop volumineuses."""
+        while True:
+            try:
+                if n := await self.memory.compress_all(self._busy):
+                    log.info("%d conversation(s) compressée(s)", n)
+            except Exception as e:
+                log_error(log, "Compression des conversations échouée", e)
+            await asyncio.sleep(self.memory.compress_every_s)
+
     async def run(self) -> None:
+        compressor: asyncio.Task | None = None
         try:
             await self.start()
+            if self.memory and self.memory.compress_every_s:
+                compressor = asyncio.create_task(self._compress_periodically())
             async for utterance in self.stt.listen():
                 try:
                     await self.process(utterance)
@@ -172,6 +190,8 @@ class Assistant:
                 if self._stop_requested:
                     break
         finally:
+            if compressor is not None:
+                compressor.cancel()
             await self.stop()
 
     def request_stop(self) -> None:
@@ -216,6 +236,10 @@ class Assistant:
             self.stt.resume()
 
     async def process(self, utterance: Utterance) -> None:
+        async with self._busy:
+            await self._process(utterance)
+
+    async def _process(self, utterance: Utterance) -> None:
         if utterance.addressed is False and time.time() > self._attentive_until:
             utterance = await self._identify(utterance)
             log.debug("[%s] (non adressé) %s", utterance.speaker or "inconnu", utterance.text)
@@ -238,6 +262,8 @@ class Assistant:
         await self.events.emit("utterance", utterance=utterance)
         if self.memory:
             self.memory.begin_turn(utterance.text, utterance.speaker)
+            if note := self.memory.related_note(utterance.text):
+                utterance.notes.append(note)
 
         ctx = ActionContext(utterance=utterance, services=self.services, confirm=self.confirm)
         spoke = False

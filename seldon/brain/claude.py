@@ -107,6 +107,18 @@ class ClaudeBrain(Brain):
             )
         return await self.client.messages.create(**kwargs)
 
+    async def summarize(self, instructions: str, text: str) -> str | None:
+        if self.client is None:
+            return None
+        response = await self.client.messages.create(
+            model=self.model,
+            max_tokens=self.max_tokens,
+            system=instructions,
+            messages=[{"role": "user", "content": text}],
+            output_config={"effort": "low"},
+        )
+        return "".join(b.text for b in response.content if b.type == "text").strip() or None
+
     async def handle(self, utterance: Utterance, actions: list[Action], execute: ActionExecutor) -> str | None:
         assert self.client is not None, "start() n'a pas été appelé"
         if len(self.messages) > self.max_history_messages:

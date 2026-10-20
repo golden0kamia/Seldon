@@ -177,3 +177,98 @@ def test_summary_and_load_conversations(tmp_path):
     (tmp_path / "autre.json").write_text('{"inconnu": 1}', encoding="utf-8")
     assert [c.title for c in load_conversations(tmp_path)] == [conv.title]
     assert load_conversations(tmp_path / "absent") == []
+
+
+def answers(*replies):
+    """Confirmation qui renvoie les réponses données, dans l'ordre, et note les questions."""
+    asked = []
+
+    async def confirm(question):
+        asked.append(question)
+        return replies[len(asked) - 1]
+    return confirm, asked
+
+
+async def test_tool_edits_require_confirmation(tmp_path):
+    a, brain, memory, _ = build(tmp_path, [])
+    await a.process(Utterance("parlons du jardin et des tomates"))
+    await a.process(Utterance("mon code est 1234"))
+    jardin = memory.current.id
+    await a.process(Utterance("/nouvelle"))
+    a.confirm, asked = answers(False, True, True)
+    brain.script["renomme"] = [("conversations", {"operation": "renommer", "id": jardin, "titre": "Potager"})]
+    await a.process(Utterance("renomme"))
+    assert memory.load(jardin).title == "parlons du jardin et des tomates"   # refusé
+    brain.script["renomme encore"] = brain.script["renomme"]
+    await a.process(Utterance("renomme encore"))
+    assert memory.load(jardin).title == "Potager"
+    brain.script["oublie"] = [("conversations", {"operation": "oublier", "id": jardin, "texte": "code est 1234"})]
+    await a.process(Utterance("oublie"))
+    assert [m["text"] for m in memory.load(jardin).transcript] == [
+        "parlons du jardin et des tomates", "écho parlons du jardin et des tomates"]
+    assert asked[0] == "Renommer la conversation « parlons du jardin et des tomates » en « Potager » ?"
+    assert "Retirer 2 message(s)" in asked[2]
+
+
+async def test_tool_deletes_current_conversation_after_turn(tmp_path):
+    a, brain, memory, _ = build(tmp_path, [])
+    a.confirm, asked = answers(True)
+    await a.process(Utterance("parlons du jardin"))
+    brain.script["supprime cette conversation"] = [("conversations", {"operation": "supprimer"})]
+    await a.process(Utterance("supprime cette conversation"))
+    assert memory.current is None and brain.messages == []
+    assert list(tmp_path.glob("*.json")) == []
+    assert asked == ["Supprimer définitivement la conversation « parlons du jardin » (3 messages) ?"]
+
+
+async def test_new_conversation_suggests_related_topic(tmp_path):
+    a, brain, memory, _ = build(tmp_path, [])
+    await a.process(Utterance("comment tailler les rosiers du jardin ?"))
+    rosiers = memory.current.id
+    await a.process(Utterance("/nouvelle"))
+    seen = []
+    handle = brain.handle
+
+    async def spy(utterance, actions, execute):
+        seen.append(list(utterance.notes))
+        return await handle(utterance, actions, execute)
+    brain.handle = spy
+    await a.process(Utterance("quand tailler les rosiers ?"))
+    assert any(f"id={rosiers}" in n for n in seen[0])
+    # l'utilisateur accepte : toute la nouvelle conversation rejoint l'ancienne
+    brain.script["oui"] = [("conversations", {"operation": "reprendre", "id": rosiers})]
+    await a.process(Utterance("oui"))
+    assert memory.current.id == rosiers and len(memory.all()) == 1
+    assert [m["text"] for m in memory.current.transcript if m["role"] == "user"] == [
+        "comment tailler les rosiers du jardin ?", "quand tailler les rosiers ?", "oui"]
+    await a.process(Utterance("/nouvelle"))
+    await a.process(Utterance("bonjour, tu vas bien ?"))
+    assert seen[-1] == []   # rien en commun : pas de proposition
+
+
+async def test_compress_summarizes_oversized_conversations(tmp_path):
+    class SummaryBrain(EchoBrain):
+        async def summarize(self, instructions, text):
+            return f"résumé de {text.count(chr(10)) + 1} messages"
+
+    a, brain, memory, _ = build(tmp_path, [], brain=SummaryBrain(), compress_max_chars=100, compress_keep=4)
+    for i in range(6):
+        await a.process(Utterance(f"message numéro {i} sur les tomates"))
+    other = memory.current.id
+    await a.process(Utterance("/nouvelle"))
+    for i in range(6):
+        await a.process(Utterance(f"phrase {i} sur le vélo"))
+    assert await memory.compress_all() == 2
+    for conv in (memory.load(other), memory.current):
+        assert [m["role"] for m in conv.transcript] == ["summary", "user", "assistant", "user", "assistant"]
+        assert conv.transcript[0]["text"] == "résumé de 8 messages"
+    assert brain.messages[0]["content"].startswith("[note : résumé des échanges précédents]\nrésumé de 8 messages")
+    assert memory.load(other).state == {}
+    assert await memory.compress_all() == 0   # déjà assez courtes
+    async def unsupported(*_):
+        return None
+    brain.summarize = unsupported   # pas de résumé par le cerveau : résumé local
+    for i in range(4):
+        await a.process(Utterance(f"phrase {i} sur le vélo"))
+    assert await memory.compress_all() == 1
+    assert memory.current.transcript[0]["text"].startswith("Le ")

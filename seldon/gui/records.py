@@ -246,7 +246,7 @@ class ConversationsView(RecordsView):
         if self.modes and self.modes[1].isChecked():
             lines = []
             for m in conv.transcript:
-                who = (m.get("speaker") or "inconnu") if m["role"] == "user" else "Seldon"
+                who = {"user": m.get("speaker") or "inconnu", "summary": "Résumé"}.get(m["role"], "Seldon")
                 when = datetime.fromtimestamp(m["ts"]).strftime("%H:%M") if m.get("ts") else ""
                 lines.append(f"<p><b>{html.escape(who)}</b> <span style='color:{theme.MUTED}'>{when}</span><br>"
                              f"{_paragraphs(m['text'])}</p>")

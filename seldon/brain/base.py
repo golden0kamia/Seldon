@@ -54,6 +54,11 @@ class Brain(ABC):
         self.messages.append({"role": "user", "content": user})
         self.messages.append({"role": "assistant", "content": assistant})
 
+    async def summarize(self, instructions: str, text: str) -> str | None:
+        """Texte produit par le modèle pour ``instructions`` appliquées à ``text``, sans outils
+        ni historique (ex. résumé d'une conversation). None : non pris en charge."""
+        return None
+
     def set_state(self, state: dict[str, Any]) -> None:
         """Restaure un état produit par ``get_state`` (même type de cerveau)."""
         self.reset()

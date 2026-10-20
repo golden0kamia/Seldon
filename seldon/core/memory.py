@@ -13,7 +13,15 @@ le cerveau est du même type, sinon à partir de la transcription.
 
 Un changement demandé par le cerveau (outil ``conversations``) pendant un tour
 n'est appliqué qu'à la fin de ce tour, pour ne pas modifier son historique en
-cours de route.
+cours de route. Le cerveau peut aussi renommer une conversation, en retirer des
+messages ou la supprimer (après confirmation, voir l'action ``conversations``).
+
+Au premier message d'une nouvelle conversation, ``related_note()`` cherche si le
+sujet a déjà été abordé et invite le cerveau à proposer de le poursuivre.
+
+``compress_all()``, appelé périodiquement par le pipeline, résume (avec le
+cerveau, ou localement à défaut) le début des conversations trop volumineuses :
+les anciens messages sont remplacés par une entrée ``role: "summary"``.
 
 La mémoire sait aussi quand chaque personne a parlé pour la dernière fois :
 ``absence_note()`` signale au cerveau quelqu'un qui revient après une longue
@@ -24,6 +32,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import AbstractAsyncContextManager, nullcontext
 import time
 import unicodedata
 import uuid
@@ -131,9 +140,25 @@ class Conversation:
         return "\n".join(lines)
 
     def tail(self, n: int = 10) -> str:
-        return "\n".join(
-            f"{'Utilisateur' if m['role'] == 'user' else 'Seldon'} : {m['text']}" for m in self.transcript[-n:]
-        )
+        return "\n".join(f"{_ROLE_LABELS.get(m['role'], 'Seldon')} : {m['text']}" for m in self.transcript[-n:])
+
+    def size(self) -> int:
+        """Taille de la transcription, en caractères."""
+        return sum(len(m["text"]) for m in self.transcript)
+
+    def matching(self, text: str) -> list[dict[str, Any]]:
+        """Messages (hors résumés) qui contiennent ``text``, sans tenir compte des accents ni de la casse."""
+        needle = _fold(" ".join(text.split()))
+        return [m for m in self.transcript if needle and m["role"] != "summary" and needle in _fold(" ".join(m["text"].split()))]
+
+
+_ROLE_LABELS = {"user": "Utilisateur", "assistant": "Seldon", "summary": "Résumé des échanges précédents"}
+
+SUMMARY_INSTRUCTIONS = (
+    "Résume en français, en quelques phrases, cet extrait de conversation entre un utilisateur "
+    "et Seldon, son assistant vocal. Garde les faits, décisions, préférences, noms, chiffres et "
+    "demandes encore en suspens ; omets les politesses. Réponds uniquement par le résumé."
+)
 
 
 class ConversationMemory:
@@ -145,6 +170,11 @@ class ConversationMemory:
         new_after_idle_s: float = 600,
         title_chars: int = 70,
         greet_after_s: float | None = 6 * 3600,   # absence au-delà de laquelle Seldon accueille ; None = jamais
+        suggest_related: bool = True,   # nouvelle conversation sur un sujet déjà abordé : propose de le poursuivre
+        related_min_words: int = 2,   # mots du sujet en commun pour juger qu'il a déjà été abordé
+        compress_every_s: float | None = 1800,   # vérification des conversations trop longues ; None = jamais
+        compress_max_chars: int = 20000,   # au-delà, le début de la conversation est résumé
+        compress_keep: int = 12,   # derniers messages gardés tels quels lors d'un résumé
     ) -> None:
         self.brain = brain
         self.brain_kind = brain_kind
@@ -152,9 +182,15 @@ class ConversationMemory:
         self.new_after_idle_s = new_after_idle_s
         self.title_chars = title_chars
         self.greet_after_s = greet_after_s
+        self.suggest_related = suggest_related
+        self.related_min_words = related_min_words
+        self.compress_every_s = compress_every_s
+        self.compress_max_chars = compress_max_chars
+        self.compress_keep = compress_keep
         self._last_seen: dict[str, tuple[float, str, str]] | None = None   # locuteur -> (instant, titre, id)
         self.current: Conversation | None = None
-        self._pending: tuple[str, str | None] | None = None   # ("switch", id) | ("new", None)
+        self._pending: list[tuple[str, Any]] = []   # changements à appliquer en fin de tour
+        self._suggested: tuple[str, str] | None = None   # (conversation en cours, conversation proposée)
         self._turn_start = 0   # début du tour en cours dans la transcription
         self._turn_state: dict[str, Any] = {}   # état du cerveau au début du tour
 
@@ -168,6 +204,9 @@ class ConversationMemory:
         if conv is None or not conv.transcript:
             return
         conv.state = self.brain.get_state() if state is None else state
+        self._write(conv)
+
+    def _write(self, conv: Conversation) -> None:
         self.dir.mkdir(parents=True, exist_ok=True)
         tmp = self._path(conv.id).with_suffix(".tmp")
         tmp.write_text(json.dumps(asdict(conv), ensure_ascii=False), encoding="utf-8")
@@ -188,18 +227,39 @@ class ConversationMemory:
 
     def search(self, query: str = "", limit: int = 10) -> list[Conversation]:
         """Conversations correspondant le mieux aux mots de ``query`` (récentes si vide)."""
-        convs = self.all()
         terms = _words(query)
         if not terms:
-            return convs[:limit]
+            return self.all()[:limit]
+        return [c for _, c in self._scored(terms)[:limit]]
+
+    def _scored(self, terms: set[str]) -> list[tuple[int, Conversation]]:
+        """(nombre de mots communs, conversation), la plus pertinente d'abord (titre compté triple)."""
         scored = []
-        for conv in convs:
+        for conv in self.all():
             title, body = _words(conv.title), _words(" ".join(m["text"] for m in conv.transcript))
             score = 3 * len(terms & title) + len(terms & body)
             if score:
-                scored.append((score, conv.updated, conv))
+                scored.append((score, conv.updated, len(terms & (title | body)), conv))
         scored.sort(key=lambda s: (s[0], s[1]), reverse=True)
-        return [c for _, _, c in scored[:limit]]
+        return [(common, c) for _, _, common, c in scored]
+
+    def related_note(self, text: str) -> str | None:
+        """Au premier message d'une conversation : note pour le cerveau si ce sujet a déjà été abordé."""
+        conv = self.current
+        if not self.suggest_related or conv is None or len(conv.transcript) != 1:
+            return None
+        terms = {k for k in _words(text) if k not in _FILLER}
+        found = next((c for common, c in self._scored(terms)
+                      if c.id != conv.id and common >= self.related_min_words), None)
+        if found is None:
+            return None
+        self._suggested = (conv.id, found.id)
+        return (
+            f"ce sujet a peut-être déjà été abordé dans la conversation « {found.title or 'sans titre'} » "
+            f"du {datetime.fromtimestamp(found.updated):%d/%m/%Y} (id={found.id}). Si c'est bien le même sujet, "
+            "demande d'abord à l'utilisateur s'il veut la poursuivre ; s'il accepte, reprends-la avec l'outil "
+            "conversations (operation='reprendre')."
+        )
 
     def last_seen(self, speaker: str) -> tuple[float, str, str] | None:
         """(instant, titre, id de la conversation) de la dernière prise de parole de ``speaker``."""
@@ -227,6 +287,56 @@ class ConversationMemory:
             f"« {title or 'sans titre'} » (conversation id={conv_id}). Salue cette personne naturellement ; "
             "propose de reprendre ce sujet seulement si c'est à propos."
         )
+
+    def is_current(self, conv_id: str) -> bool:
+        return self.current is not None and self.current.id == conv_id
+
+    def rename(self, conv_id: str, title: str) -> bool:
+        if self.is_current(conv_id):
+            self.current.title = title   # sauvegardé en fin de tour
+            return True
+        conv = self.load(conv_id)
+        if conv is None:
+            return False
+        conv.title = title
+        self._write(conv)
+        return True
+
+    def forget(self, conv_id: str, text: str) -> int:
+        """Retire les messages contenant ``text`` (en fin de tour pour la conversation en cours)."""
+        if self.is_current(conv_id):
+            count = len(self.current.matching(text))
+            if count:
+                self._pending.append(("forget", (conv_id, text)))
+            return count
+        return self._forget_now(conv_id, text)
+
+    def _forget_now(self, conv_id: str, text: str) -> int:
+        current = self.is_current(conv_id)
+        conv = self.current if current else self.load(conv_id)
+        if conv is None:
+            return 0
+        removed = conv.matching(text)
+        if not removed:
+            return 0
+        conv.transcript = [m for m in conv.transcript if all(m is not r for r in removed)]
+        self._last_seen = None
+        if not conv.transcript:
+            self.delete(conv_id)
+        elif current:   # l'historique du cerveau est reconstruit à partir de la transcription
+            self.brain.set_state({"messages": transcript_messages(conv.transcript)})
+            self.save()
+        else:
+            conv.state = {}   # reconstruit à partir de la transcription à la reprise
+            self._write(conv)
+        return len(removed)
+
+    def request_delete(self, conv_id: str) -> None:
+        """Supprime ``conv_id`` ; en fin de tour si c'est la conversation en cours."""
+        if self.is_current(conv_id):
+            self._pending.append(("delete", conv_id))
+        else:
+            self.delete(conv_id)
 
     def delete(self, conv_id: str) -> bool:
         self._last_seen = None
@@ -268,10 +378,10 @@ class ConversationMemory:
         return target
 
     def request_resume(self, conv_id: str) -> None:
-        self._pending = ("switch", conv_id)
+        self._pending.append(("switch", conv_id))
 
     def request_new(self) -> None:
-        self._pending = ("new", None)
+        self._pending.append(("new", None))
 
     def begin_turn(self, text: str, speaker: str | None) -> None:
         """À appeler avant de passer une prise de parole au cerveau."""
@@ -281,6 +391,7 @@ class ConversationMemory:
             self.new()
         if self.current is None:
             self.current = self._new()
+            self._suggested = None
         self._turn_start = len(self.current.transcript)
         self._turn_state = self.brain.get_state()
         self.record("user", text, speaker)
@@ -314,20 +425,29 @@ class ConversationMemory:
 
     def end_turn(self) -> None:
         """À appeler après le tour du cerveau : sauvegarde et applique un changement demandé."""
-        pending, self._pending = self._pending, None
-        if pending is None:
-            self.save()
-        elif pending[0] == "new":
-            self.new()
-        else:
-            self._move_turn_to(pending[1])
+        pending, self._pending = self._pending, []
+        for op, arg in pending:
+            if op == "new":
+                self.new()
+            elif op == "switch":
+                self._move_turn_to(arg)
+            elif op == "forget":
+                self._forget_now(*arg)
+            elif op == "delete":
+                self.delete(arg)
+        self.save()
 
     def _move_turn_to(self, conv_id: str) -> None:
-        """Reprend ``conv_id`` en y déplaçant l'échange qui a demandé la reprise."""
+        """Reprend ``conv_id`` en y déplaçant l'échange qui a demandé la reprise.
+
+        Si cette reprise répond à la proposition de ``related_note()``, toute la
+        nouvelle conversation y est déplacée (elle ne contient que ce sujet).
+        """
         old = self.current
-        turn = old.transcript[self._turn_start:] if old else []
+        start = 0 if old and self._suggested == (old.id, conv_id) else self._turn_start
+        turn = old.transcript[start:] if old else []
         if old:
-            del old.transcript[self._turn_start:]
+            del old.transcript[start:]
             self.save(self._turn_state)   # l'ancienne conversation sans ce tour
             self.current = None
         if self.resume(conv_id) is None:
@@ -340,13 +460,76 @@ class ConversationMemory:
         conv = self.current
         for m in turn:
             self.record(m["role"], m["text"], m.get("speaker"))
-        user = "\n".join(f"[locuteur : {m.get('speaker') or 'inconnu'}]\n{m['text']}" for m in turn if m["role"] == "user")
-        reply = "\n".join(m["text"] for m in turn if m["role"] == "assistant")
-        if user and reply:
+        for user, reply in _exchanges(turn):
             self.brain.append_exchange(user, reply)
         self.save()
         if old and not old.transcript:   # conversation vide après déplacement : supprimée
             self._path(old.id).unlink(missing_ok=True)
+
+
+    # --- compression -------------------------------------------------------------
+
+    async def compress_all(self, lock: AbstractAsyncContextManager | None = None) -> int:
+        """Résume le début des conversations trop volumineuses ; renvoie leur nombre.
+
+        ``lock`` (verrou du pipeline) est pris pour chaque conversation, pour ne
+        jamais en modifier une pendant un tour du cerveau.
+        """
+        done = 0
+        for conv in self.all():
+            if conv.size() <= self.compress_max_chars or len(conv.transcript) <= self.compress_keep + 1:
+                continue
+            async with lock or nullcontext():
+                if await self.compress(conv.id):
+                    done += 1
+        return done
+
+    async def compress(self, conv_id: str) -> bool:
+        """Remplace les messages de ``conv_id`` sauf les ``compress_keep`` derniers par un résumé."""
+        current = self.is_current(conv_id)
+        conv = self.current if current else self.load(conv_id)
+        if conv is None or len(conv.transcript) <= self.compress_keep + 1:
+            return False
+        cut = len(conv.transcript) - self.compress_keep
+        old = conv.transcript[:cut]
+        text = "\n".join(f"{_ROLE_LABELS.get(m['role'], 'Seldon')}"
+                         f"{' (' + m['speaker'] + ')' if m.get('speaker') else ''} : {m['text']}" for m in old)
+        summary = None
+        try:
+            summary = await self.brain.summarize(SUMMARY_INSTRUCTIONS, text)
+        except Exception as e:
+            log.warning("Résumé par le cerveau impossible (%s) : résumé local", e)
+        if not summary:
+            part = Conversation(id=conv.id, created=old[0]["ts"], updated=old[-1]["ts"], brain=conv.brain,
+                                title=conv.title, speakers=conv.speakers, transcript=old)
+            summary = part.summary(requests=10)
+        conv.transcript = [{"role": "summary", "text": summary.strip(), "speaker": None, "ts": old[0]["ts"]},
+                           *conv.transcript[cut:]]
+        log.info("Conversation « %s » compressée : %d messages résumés", conv.title, len(old))
+        if current:
+            self.brain.set_state({"messages": transcript_messages(conv.transcript)})
+            self.save()
+        else:
+            conv.state = {}   # reconstruit à partir de la transcription à la reprise
+            self._write(conv)
+        return True
+
+
+def _exchanges(transcript: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """Échanges (paroles de l'utilisateur, réponses de Seldon) d'un extrait de transcription."""
+    out: list[tuple[str, str]] = []
+    user: list[str] = []
+    reply: list[str] = []
+    for m in [*transcript, {"role": "user", "text": None}]:
+        if m["role"] == "user":
+            if user and reply:
+                out.append(("\n".join(user), "\n".join(reply)))
+                user, reply = [], []
+            if m["text"] is not None:
+                user.append(f"[locuteur : {m.get('speaker') or 'inconnu'}]\n{m['text']}")
+        elif m["role"] == "assistant":
+            reply.append(m["text"])
+    return out
 
 
 def load_conversations(folder: str | Path) -> list[Conversation]:
@@ -367,8 +550,13 @@ def transcript_messages(transcript: list[dict[str, Any]]) -> list[dict[str, Any]
     """Transcription -> messages texte alternés user/assistant (format commun aux cerveaux)."""
     messages: list[dict[str, Any]] = []
     for m in transcript:
-        role = "user" if m["role"] == "user" else "assistant"
-        text = f"[locuteur : {m.get('speaker') or 'inconnu'}]\n{m['text']}" if role == "user" else m["text"]
+        role = "user" if m["role"] in ("user", "summary") else "assistant"
+        if m["role"] == "summary":
+            text = f"[note : résumé des échanges précédents]\n{m['text']}"
+        elif role == "user":
+            text = f"[locuteur : {m.get('speaker') or 'inconnu'}]\n{m['text']}"
+        else:
+            text = m["text"]
         if messages and messages[-1]["role"] == role:
             messages[-1]["content"] += "\n" + text
         elif messages or role == "user":

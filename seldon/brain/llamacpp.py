@@ -123,13 +123,14 @@ class LlamaCppBrain(Brain):
             ]})
         return msgs
 
-    async def _chat(self, tools: list[dict[str, Any]]) -> dict[str, Any]:
+    async def _chat(self, tools: list[dict[str, Any]], messages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         body: dict[str, Any] = {
             "model": self.model,
-            "messages": [{"role": "system", "content": self.system}, *self.messages],
-            "tools": tools,
+            "messages": messages or [{"role": "system", "content": self.system}, *self.messages],
             "max_tokens": self.max_tokens,
         }
+        if tools:
+            body["tools"] = tools
         if self.thinking is not None:
             body["chat_template_kwargs"] = {"enable_thinking": self.thinking}
         if self.temperature is not None:
@@ -141,6 +142,12 @@ class LlamaCppBrain(Brain):
             return response.json()["choices"][0]["message"]
         except (ValueError, KeyError, IndexError, TypeError) as e:
             raise SeldonError(f"Réponse illisible du serveur llama : {response.text[:200]}") from e
+
+    async def summarize(self, instructions: str, text: str) -> str | None:
+        if self.client is None:
+            return None
+        msg = await self._chat([], [{"role": "system", "content": instructions}, {"role": "user", "content": text}])
+        return (msg.get("content") or "").strip() or None
 
     async def handle(self, utterance: Utterance, actions: list[Action], execute: ActionExecutor) -> str | None:
         assert self.client is not None, "start() n'a pas été appelé"

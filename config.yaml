@@ -8,6 +8,10 @@ memory:                   # mémoire des conversations (reprise à tout moment)
   dir: data/conversations
   new_after_idle_s: 600   # après 10 min de silence, nouvelle conversation (l'ancienne est gardée)
   greet_after_s: 21600    # après 6 h d'absence, Seldon accueille la personne (null = jamais)
+  suggest_related: true   # nouvelle conversation sur un sujet déjà abordé : propose de le poursuivre
+  compress_every_s: 1800  # toutes les 30 min, résume le début des conversations trop longues (null = jamais)
+  compress_max_chars: 20000
+  compress_keep: 12       # derniers messages gardés tels quels
 
 commands: true            # commandes locales : exit, reset, actions, aide (taper /aide)
 confirm: console          # validation des actions sensibles : console | always | never
@@ -41,7 +45,7 @@ brain:
   options:
     base_url: http://127.0.0.1:9931/v1
     model: null           # null = modèle chargé sur le serveur
-    vision: false         # true si le modèle lit les images (caméra)
+    vision: true          # true si le modèle lit les images (caméra)
     thinking: false       # raisonnement du modèle : plus lent, parfois plus juste
     max_steps: 10
   # engine: ollama

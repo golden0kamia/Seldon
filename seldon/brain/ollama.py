@@ -88,6 +88,18 @@ class OllamaBrain(Brain):
                 msg["content"] += f"\n({len(result.images)} image(s) obtenue(s), mais ce modèle ne peut pas les voir.)"
         return msg
 
+    async def summarize(self, instructions: str, text: str) -> str | None:
+        if self.client is None:
+            return None
+        response = await self.client.chat(
+            model=self.model,
+            messages=[{"role": "system", "content": instructions}, {"role": "user", "content": text}],
+            think=self.think,
+            options=self.options,
+            keep_alive=self.keep_alive,
+        )
+        return (response.message.content or "").strip() or None
+
     async def handle(self, utterance: Utterance, actions: list[Action], execute: ActionExecutor) -> str | None:
         assert self.client is not None, "start() n'a pas été appelé"
         if len(self.messages) > self.max_history_messages:

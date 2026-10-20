@@ -110,6 +110,25 @@ tomates ? ») : le cerveau cherche et recharge la conversation via l'outil
 (pour ajouter une commande : décorateur `@command` dans
 `seldon/core/commands.py`). Dans l'interface, page Paramètres › Mémoire.
 
+Seldon peut aussi **modifier ou supprimer** une conversation à la demande
+(« renomme cette conversation Potager », « oublie ce que je t'ai dit sur mon
+code », « supprime la conversation sur le vélo ») : opérations `renommer`,
+`oublier` (retire les messages contenant un passage) et `supprimer` de l'outil
+`conversations`. **Chacune demande une confirmation** (Oui / Non dans le
+Journal de l'interface, ou `o` en console) ; sans accord, rien ne change.
+
+**Sujet déjà abordé** : au premier message d'une nouvelle conversation, Seldon
+cherche si le sujet a déjà été traité (au moins `related_min_words` mots en
+commun, 2 par défaut). Si oui, il demande s'il faut poursuivre l'ancienne
+conversation ; en cas d'accord, toute la nouvelle y est rattachée.
+`suggest_related: false` désactive la proposition.
+
+**Compression** : toutes les `compress_every_s` secondes (30 min ; `null` =
+jamais), les conversations de plus de `compress_max_chars` caractères (20 000)
+sont allégées : sauf les `compress_keep` derniers messages (12), leur début
+est remplacé par un résumé rédigé par le cerveau (ou calculé localement s'il
+ne sait pas résumer). La vérification attend la fin de l'échange en cours.
+
 Commandes terminal (`mode: allowlist`), classées en trois niveaux :
 
 - **bénigne** — lecture seule (`ls`, `grep`, `df`, `git status`…) : s'exécute
