@@ -253,3 +253,30 @@ def test_layout_does_not_move_with_state_or_engine(window, qapp):
         stage.combo.setCurrentText(engine)
         qapp.processEvents()
         assert fields() == ref, engine
+
+
+def test_logs_page_runs_program_and_streams_output(window, qapp, monkeypatch):
+    from PySide6.QtCore import QDeadlineTimer
+
+    from seldon.gui.window import LOGS_PAGE
+
+    r = window.runner
+    script = ("import sys; print('2026 WARNING seldon: attention', flush=True); "
+              "print('écho', sys.stdin.readline().strip(), flush=True)")
+    monkeypatch.setattr(r, "arguments", lambda text: ["-c", script])
+    window.launch(text=True)
+    assert window.pages.currentIndex() == LOGS_PAGE
+    assert r.process.waitForStarted(5000) and r.running
+    assert not window.run_actions["start"].isEnabled() and window.run_actions["stop"].isEnabled()
+    assert r.input.isEnabled()                       # stdin ouvert en mode texte
+    r.input.setText("bonjour")
+    r.send()
+    deadline = QDeadlineTimer(5000)
+    while r.running and not deadline.hasExpired():
+        r.process.waitForFinished(50)
+        qapp.processEvents()
+    qapp.processEvents()
+    log = r.log.toPlainText()
+    assert "WARNING seldon: attention" in log and "écho bonjour" in log and "code 0" in log
+    assert window.run_actions["start"].isEnabled() and not r.input.isEnabled()
+    assert window.masthead.state.text() == "prêt"

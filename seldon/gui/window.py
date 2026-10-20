@@ -1,4 +1,4 @@
-"""Fenêtre principale : deux pages, Paramètres et Éditeur (arborescence + fichiers en onglets)."""
+"""Fenêtre principale : trois pages, Paramètres, Éditeur (arborescence + fichiers en onglets) et Journal."""
 
 from __future__ import annotations
 
@@ -13,10 +13,11 @@ from PySide6.QtWidgets import (
 from seldon.gui import theme
 from seldon.gui.editor import EditorTabs, FileTab
 from seldon.gui.files import FileBrowser
+from seldon.gui.runner import RunnerPanel
 from seldon.gui.settings import SettingsPanel
 
 THEMES = [("auto", "Automatique (système)"), ("light", "Clair"), ("dark", "Sombre")]
-SETTINGS_PAGE, EDITOR_PAGE = 0, 1
+SETTINGS_PAGE, EDITOR_PAGE, LOGS_PAGE = 0, 1, 2
 
 
 def project_roots(project: Path, doc) -> list[tuple[str, Path]]:
@@ -47,6 +48,7 @@ class MainWindow(QMainWindow):
         self.editors = EditorTabs()
         self.editors.default_dir = lambda: self.files.root or self.project
         self.settings = SettingsPanel(self.config_path)
+        self.runner = RunnerPanel(self.config_path)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self.files)
@@ -57,6 +59,7 @@ class MainWindow(QMainWindow):
         self.pages = QStackedWidget()
         self.pages.addWidget(self.settings)   # SETTINGS_PAGE
         self.pages.addWidget(splitter)        # EDITOR_PAGE
+        self.pages.addWidget(self.runner)     # LOGS_PAGE
         self.masthead = theme.Masthead()
         central = QWidget(objectName="central")
         lay = QVBoxLayout(central)
@@ -80,6 +83,7 @@ class MainWindow(QMainWindow):
         self.editors.opened.connect(lambda: self.show_page(EDITOR_PAGE))
         self.editors.current_changed.connect(self._update_status)
         self.editors.saved.connect(lambda p: self.statusBar().showMessage(f"Enregistré : {p}", 3000))
+        self.runner.running_changed.connect(self._running_changed)
 
         self._build_menus()
         self._restore(root)
@@ -112,9 +116,23 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(ed["replace"])
         edit_menu.addAction(act("Commenter / décommenter", self._toggle_comment, "Ctrl+/"))
 
+        run = self.menuBar().addMenu("&Seldon")
+        self.run_actions = {
+            "start": act("▶ &Lancer (mode vocal)", lambda: self.launch(text=False), "F5"),
+            "text": act("▶ Lancer en mode &texte", lambda: self.launch(text=True), "Ctrl+F5"),
+            "stop": act("■ &Arrêter", self.runner.stop, "Shift+F5"),
+        }
+        for a in self.run_actions.values():
+            run.addAction(a)
+        run.addSeparator()
+        run.addAction(act("▤ &Journal en direct", lambda: self.show_page(LOGS_PAGE), "Ctrl+3"))
+        run.addAction(act("&Effacer le journal", self.runner.log.clear))
+        self._running_changed(False)
+
         view = self.menuBar().addMenu("&Affichage")
         view.addAction(act("⚙ Paramètres", lambda: self.show_page(SETTINGS_PAGE), "Ctrl+1"))
         view.addAction(act("✎ Éditeur", lambda: self.show_page(EDITOR_PAGE), "Ctrl+2"))
+        view.addAction(act("▤ Journal", lambda: self.show_page(LOGS_PAGE), "Ctrl+3"))
         view.addSeparator()
         self.show_hidden = act("Afficher les fichiers cachés", self.files.set_show_hidden)
         self.show_hidden.setCheckable(True)
@@ -148,6 +166,20 @@ class MainWindow(QMainWindow):
             self.editors.ensure_document()
             if (tab := self.editors.current()) and tab.editor:
                 tab.editor.setFocus()
+        self._update_status()
+
+    # --- programme principal -------------------------------------------------
+    def launch(self, text: bool = False) -> None:
+        """Lance Seldon sur ``config.yaml`` ; des paramètres non enregistrés sont proposés à l'enregistrement."""
+        if self.runner.running or not self.settings.confirm_close():
+            return
+        self.show_page(LOGS_PAGE)
+        self.runner.start(text=text)
+
+    def _running_changed(self, running: bool) -> None:
+        self.run_actions["start"].setEnabled(not running)
+        self.run_actions["text"].setEnabled(not running)
+        self.run_actions["stop"].setEnabled(running)
         self._update_status()
 
     # --- thème ----------------------------------------------------------------
@@ -202,6 +234,8 @@ class MainWindow(QMainWindow):
         pending = self.settings.dirty + sum(t.modified for t in self.editors.file_tabs())
         if pending:
             self.masthead.set_state(f"{pending} modif. non enregistrée(s)", theme.AMBER)
+        elif self.runner.running:
+            self.masthead.set_state("seldon en marche", theme.ACCENT_HI)
         else:
             self.masthead.set_state("prêt", theme.ACCENT_HI)
         tab = self.editors.current()
@@ -211,7 +245,8 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(f"{tab.title} — Seldon")
         else:
             self.position.setText("")
-            self.setWindowTitle("Paramètres — Seldon" if self.pages.currentIndex() == SETTINGS_PAGE else "Seldon")
+            titles = {SETTINGS_PAGE: "Paramètres — Seldon", LOGS_PAGE: "Journal — Seldon"}
+            self.setWindowTitle(titles.get(self.pages.currentIndex(), "Seldon"))
 
     # --- persistance --------------------------------------------------------
     def _restore(self, root: Path | None) -> None:
@@ -236,12 +271,13 @@ class MainWindow(QMainWindow):
             if p and Path(p).is_file():
                 self.editors.open_file(Path(p))
         self.editors.ensure_document()
-        self.show_page(int(self.store.value("page", SETTINGS_PAGE, type=int)) % 2)
+        self.show_page(int(self.store.value("page", SETTINGS_PAGE, type=int)) % self.pages.count())
 
     def closeEvent(self, event) -> None:  # noqa: N802
         if not self.settings.confirm_close() or not self.editors.confirm_close_all():
             event.ignore()
             return
+        self.runner.stop(wait=True)
         self.store.setValue("geometry", self.saveGeometry())
         self.store.setValue("splitter", self.splitter.saveState())
         self.store.setValue("show_hidden", self.show_hidden.isChecked())

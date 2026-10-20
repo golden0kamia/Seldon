@@ -519,7 +519,7 @@ class Masthead(QWidget):
 
     toggle_variant = Signal()
     LONGEST_STATE = "99 modif. non enregistrée(s)"
-    mode_changed = Signal(int)   # 0 = paramètres, 1 = éditeur
+    mode_changed = Signal(int)   # 0 = paramètres, 1 = éditeur, 2 = journal
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -537,7 +537,8 @@ class Masthead(QWidget):
         modes = QHBoxLayout()
         modes.setSpacing(SPACE)
         for i, (text, tip) in enumerate((("⚙  PARAMÈTRES", "Réglages de config.yaml (Ctrl+1)"),
-                                        ("✎  ÉDITEUR", "Fichiers et éditeur de texte (Ctrl+2)"))):
+                                        ("✎  ÉDITEUR", "Fichiers et éditeur de texte (Ctrl+2)"),
+                                        ("▤  JOURNAL", "Lancer Seldon et suivre ses logs (Ctrl+3)"))):
             b = QToolButton(text=text, toolTip=tip, checkable=True, autoExclusive=True, objectName="mode")
             b.clicked.connect(lambda _=False, i=i: self.mode_changed.emit(i))
             modes.addWidget(b)

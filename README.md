@@ -55,7 +55,7 @@ est facultatif (obligatoire pour passer des arguments).
 seldon-gui                          # ou : python -m seldon.gui [-c config.yaml] [dossier]
 ```
 
-Deux pages, choisies en haut de la fenêtre :
+Trois pages, choisies en haut de la fenêtre :
 
 - **⚙ Paramètres** (Ctrl+1) : formulaire généré depuis `config.yaml` et les
   signatures des plugins (moteurs disponibles, options connues avec leur valeur
@@ -73,6 +73,12 @@ Deux pages, choisies en haut de la fenêtre :
   nouveau document, Ctrl+S / Ctrl+Maj+S enregistrer (sous), Ctrl+F / Ctrl+H
   rechercher / remplacer, Ctrl+/ commenter. Un fichier modifié ailleurs (par
   Seldon, Claude Code…) est rechargé automatiquement.
+- **▤ Journal** (Ctrl+3) : menu **Seldon** › Lancer (F5, mode vocal) ou
+  Lancer en mode texte (Ctrl+F5), Arrêter (Maj+F5). Le programme principal
+  tourne dans un sous-processus et ses logs s'affichent en direct
+  (avertissements en ambre, erreurs en rouge) ; en mode texte, le champ sous
+  le journal envoie les messages à Seldon. Des paramètres non enregistrés sont
+  proposés à l'enregistrement avant le lancement.
 
 Thème néomorphique « cassette futurism », accent vert, en variante claire ou
 sombre (Affichage › Thème, bouton ☾/☀ ou Ctrl+Maj+L ; « Automatique » suit le
