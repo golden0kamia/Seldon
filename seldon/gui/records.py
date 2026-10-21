@@ -25,25 +25,58 @@ from seldon.gui import theme
 LIST_WIDTH = 320
 TITLE_CHARS = 32
 VIEW_HEIGHT = 380
+NPY_HEADER_MAX = 64 * 1024   # en-tête .npy plus long : fichier suspect, non lu (numpy s'arrête à 10 000 octets)
 
 
 def voice_samples(path: Path) -> int | None:
-    """Nombre d'échantillons d'une empreinte ``.npy`` (lignes du tableau), lu dans l'en-tête."""
+    """Nombre d'échantillons d'une empreinte ``.npy`` (lignes du tableau), lu dans l'en-tête.
+
+    Fichier tronqué, en-tête démesuré ou malformé : ``None``, sans jamais lever d'exception.
+    """
     try:
         with path.open("rb") as f:
             magic = f.read(8)
-            if magic[:6] != b"\x93NUMPY":
+            if len(magic) < 8 or magic[:6] != b"\x93NUMPY":
                 return None
             size = int.from_bytes(f.read(2 if magic[6] == 1 else 4), "little")
+            if size > NPY_HEADER_MAX:
+                return None
             header = ast.literal_eval(f.read(size).decode("latin-1"))
-    except (OSError, ValueError, SyntaxError, IndexError):
+    except (OSError, ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
         return None
-    shape = header.get("shape", ()) if isinstance(header, dict) else ()
+    shape = header.get("shape") if isinstance(header, dict) else None
+    if not (isinstance(shape, tuple) and all(isinstance(n, int) and n >= 0 for n in shape)):
+        return None
     return shape[0] if len(shape) == 2 else 1 if len(shape) == 1 else None
 
 
+_cache: dict[Path, tuple[tuple, list[Conversation]]] = {}
+
+
+def conversations(folder: Path) -> list[Conversation]:
+    """``load_conversations`` mise en cache : relue seulement si un fichier a changé (nom, taille, date).
+
+    La liste de la page Mémoire et la fiche de chaque voix s'en servent à chaque clic :
+    sans cache, toutes les conversations seraient relues à chaque fois.
+    """
+    try:
+        signature = tuple(sorted((p.name, (s := p.stat()).st_mtime_ns, s.st_size) for p in folder.glob("*.json")))
+    except OSError:
+        signature = None
+    cached = _cache.get(folder)
+    if signature is not None and cached and cached[0] == signature:
+        return cached[1]
+    convs = load_conversations(folder)
+    if signature is not None:
+        _cache[folder] = (signature, convs)
+    return convs
+
+
 def _when(ts: float) -> str:
-    return datetime.fromtimestamp(ts).strftime("%d/%m/%Y %H:%M")
+    try:
+        return datetime.fromtimestamp(ts).strftime("%d/%m/%Y %H:%M")
+    except (TypeError, ValueError, OverflowError, OSError):   # date absente ou aberrante
+        return "?"
 
 
 def _home(path: Path, base: Path | None = None) -> str:
@@ -108,10 +141,25 @@ class RecordsView(QWidget):
         lay.addWidget(body_box)
 
         self.watcher = QFileSystemWatcher(self)
+        self._stale = False   # dossier modifié pendant que la vue était cachée
+        self._error = ""      # dernière erreur de lecture du dossier
         self._debounce = QTimer(self, singleShot=True, interval=300)
         self._debounce.timeout.connect(self.refresh)
-        self.watcher.directoryChanged.connect(lambda _p: self._debounce.start())
+        self.watcher.directoryChanged.connect(lambda _p: self._folder_changed())
         self.refresh()
+
+    def _folder_changed(self) -> None:
+        """Seldon écrit après chaque échange : vue cachée, on relit seulement à son affichage."""
+        if self.isVisible():
+            self._debounce.start()
+        else:
+            self._stale = True
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self._stale:
+            self._stale = False
+            self.refresh()
 
     # --- à fournir par les sous-classes ---------------------------------------
     def load(self, folder: Path) -> list[tuple[str, str, str]]:
@@ -143,7 +191,11 @@ class RecordsView(QWidget):
         if folder.is_dir() and str(folder) not in self.watcher.directories():
             self.watcher.addPath(str(folder))
         keep = self.selected()
-        entries = self.load(folder)
+        self._stale = False
+        try:
+            entries, self._error = self.load(folder), ""
+        except Exception as e:  # noqa: BLE001 — un fichier abîmé ne doit pas casser l'interface
+            entries, self._error = [], f"Lecture impossible de {_home(folder, self.base)} : {e}"
         self.list.blockSignals(True)
         self.list.clear()
         for key, text, tip in entries:
@@ -160,7 +212,14 @@ class RecordsView(QWidget):
 
     def show_detail(self) -> None:
         key = self.selected()
-        self.detail.setText(self.render(key) if key is not None else _paragraphs(self.empty_text(self.current_dir)))
+        if key is None:
+            text = _paragraphs(self._error or self.empty_text(self.current_dir))
+        else:
+            try:
+                text = self.render(key)
+            except Exception as e:  # noqa: BLE001 — fiche malformée : on le dit au lieu de planter
+                text = _paragraphs(f"Élément illisible : {e}")
+        self.detail.setText(text)
         self.update_tools()
 
     def update_tools(self) -> None:
@@ -189,7 +248,10 @@ class SpeakersView(RecordsView):
             enrolled = _when(path.stat().st_mtime)
         except OSError:
             enrolled = "?"
-        convs = [c for c in load_conversations(self.conversations_dir()) if key in c.speakers]
+        try:
+            convs = [c for c in conversations(self.conversations_dir().resolve()) if key in (c.speakers or [])]
+        except Exception:  # noqa: BLE001 — la fiche de la voix reste utile sans ses conversations
+            convs = []
         rows = [f"<p><b>{html.escape(key)}</b></p>",
                 f"<p>Échantillons de voix : {samples if samples is not None else '?'}<br>"
                 f"Dernier enregistrement : {enrolled}<br>"
@@ -231,25 +293,29 @@ class ConversationsView(RecordsView):
         self.show_detail()
 
     def load(self, folder: Path) -> list[tuple[str, str, str]]:
-        self.convs = {c.id: c for c in load_conversations(folder)}
+        self.convs = {str(c.id): c for c in conversations(folder)}
         out = []
-        for c in self.convs.values():
-            title = c.title or "sans titre"
+        for key, c in self.convs.items():
+            title = str(c.title or "sans titre")
             short = title if len(title) <= TITLE_CHARS else title[:TITLE_CHARS].rsplit(" ", 1)[0] + "…"
-            who = f"\n{', '.join(c.speakers)}" if c.speakers else ""
-            out.append((c.id, f"{short}\n{_when(c.updated)} · {len(c.transcript)} msg", title + who))
+            speakers = [str(s) for s in c.speakers or []]
+            who = f"\n{', '.join(speakers)}" if speakers else ""
+            count = len(c.transcript) if isinstance(c.transcript, list) else 0
+            out.append((key, f"{short}\n{_when(c.updated)} · {count} msg", title + who))
         return out
 
     def render(self, key: str) -> str:
         conv = self.convs[key]
-        head = f"<p><b>{html.escape(conv.title or 'sans titre')}</b></p>"
+        head = f"<p><b>{html.escape(str(conv.title or 'sans titre'))}</b></p>"
         if self.modes and self.modes[1].isChecked():
             lines = []
             for m in conv.transcript:
-                who = {"user": m.get("speaker") or "inconnu", "summary": "Résumé"}.get(m["role"], "Seldon")
-                when = datetime.fromtimestamp(m["ts"]).strftime("%H:%M") if m.get("ts") else ""
-                lines.append(f"<p><b>{html.escape(who)}</b> <span style='color:{theme.MUTED}'>{when}</span><br>"
-                             f"{_paragraphs(m['text'])}</p>")
+                if not isinstance(m, dict):
+                    continue
+                who = {"user": m.get("speaker") or "inconnu", "summary": "Résumé"}.get(m.get("role"), "Seldon")
+                when = _when(m["ts"])[-5:] if m.get("ts") else ""   # HH:MM
+                lines.append(f"<p><b>{html.escape(str(who))}</b> <span style='color:{theme.MUTED}'>{when}</span><br>"
+                             f"{_paragraphs(str(m.get('text', '')))}</p>")
             return head + "".join(lines)
         return head + f"<p>{_paragraphs(conv.summary())}</p>"
 
@@ -264,5 +330,9 @@ class ConversationsView(RecordsView):
                 b.setEnabled(on)
 
     def _open(self) -> None:
-        if (key := self.selected()) is not None and self.current_dir is not None:
-            self.open_requested.emit(self.current_dir / f"{key}.json")
+        if (key := self.selected()) is None or self.current_dir is None:
+            return
+        # l'identifiant vient du contenu du fichier : « ../ » ne doit pas mener hors du dossier
+        path = (self.current_dir / f"{key}.json").resolve()
+        if path.parent == self.current_dir and path.is_file():
+            self.open_requested.emit(path)

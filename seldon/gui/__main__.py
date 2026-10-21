@@ -25,7 +25,24 @@ def main() -> None:
     theme.apply(app, str(QSettings("Seldon", "seldon-gui").value("theme", "auto")))
     window = MainWindow(Path(args.config), Path(args.root) if args.root else None)
     window.show()
+    app.aboutToQuit.connect(lambda: window.runner.stop(wait=True))   # jamais de Seldon orphelin (micro, GPU)
+    _handle_signals(app, window)
     sys.exit(app.exec())
+
+
+def _handle_signals(app, window) -> None:
+    """Ctrl+C au terminal ferme la fenêtre (en proposant d'enregistrer) ; SIGTERM / SIGHUP arrêtent Seldon et quittent."""
+    import signal
+
+    from PySide6.QtCore import QTimer
+
+    signal.signal(signal.SIGINT, lambda *_: window.close())
+    for name in ("SIGTERM", "SIGHUP"):
+        if (sig := getattr(signal, name, None)) is not None:
+            signal.signal(sig, lambda *_: (window.runner.stop(wait=True), app.exit(0)))
+    tick = QTimer(app)   # Python ne traite ses signaux qu'en exécutant du code : on lui en donne l'occasion
+    tick.timeout.connect(lambda: None)
+    tick.start(250)
 
 
 if __name__ == "__main__":

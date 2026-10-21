@@ -79,18 +79,27 @@ def _params(init: ast.FunctionDef, lines: list[str]) -> dict[str, Param]:
             p.default_src = ast.unparse(default)
             try:
                 p.default = ast.literal_eval(default)
-            except ValueError:
+            except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):   # non littéral, {[]}…
                 pass
         out[arg.arg] = p
     return out
 
 
-def scan_file(path: Path) -> list[PluginInfo]:
+def _parse(path: Path, needle: str = "") -> tuple[str, ast.Module] | None:
+    """Source et arbre d'un fichier ; ``None`` s'il est illisible, invalide ou sans ``needle``."""
     try:
         source = path.read_text(encoding="utf-8")
-        tree = ast.parse(source)
-    except (OSError, SyntaxError, UnicodeDecodeError):
+        if needle not in source:   # filtre textuel : la plupart des fichiers ne sont pas analysés
+            return None
+        return source, ast.parse(source)
+    except (OSError, UnicodeDecodeError, SyntaxError, ValueError, MemoryError, RecursionError):
+        return None   # ValueError : octet nul dans la source
+
+
+def scan_file(path: Path) -> list[PluginInfo]:
+    if (parsed := _parse(path, "register")) is None:
         return []
+    source, tree = parsed
     lines = source.splitlines()
     found = []
     for node in ast.walk(tree):
@@ -121,11 +130,9 @@ def discover(package_dir: str | Path | None = None) -> dict[str, dict[str, Plugi
 
 def class_params(path: str | Path, class_name: str) -> dict[str, Param]:
     """Paramètres de ``__init__`` d'une classe quelconque (ex. ConversationMemory)."""
-    try:
-        source = Path(path).read_text(encoding="utf-8")
-        tree = ast.parse(source)
-    except (OSError, SyntaxError, UnicodeDecodeError):
+    if (parsed := _parse(Path(path), class_name)) is None:
         return {}
+    source, tree = parsed
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef) and node.name == class_name:
             init = next((n for n in node.body if isinstance(n, ast.FunctionDef) and n.name == "__init__"), None)

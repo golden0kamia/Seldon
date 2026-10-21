@@ -106,22 +106,36 @@ Trois pages, choisies en haut de la fenêtre :
 - **✎ Éditeur** (Ctrl+2) : arborescence des fichiers (dossier Seldon, `data/`,
   `cwd` des actions, dossiers récents ; création, renommage, corbeille) et
   éditeur à onglets, jamais vide (document « Sans titre » par défaut).
-  Coloration Python, YAML, JSON, Markdown, TOML, shell. Raccourcis : Ctrl+N
-  nouveau document, Ctrl+S / Ctrl+Maj+S enregistrer (sous), Ctrl+F / Ctrl+H
-  rechercher / remplacer, Ctrl+/ commenter. Un fichier modifié ailleurs (par
-  Seldon, Claude Code…) est rechargé automatiquement.
+  Coloration Python, YAML, JSON, Markdown, TOML, shell (désactivée au-delà
+  de 1 Mo). Raccourcis : Ctrl+N nouveau document, Ctrl+S / Ctrl+Maj+S
+  enregistrer (sous), Ctrl+F / Ctrl+H rechercher / remplacer, Ctrl+/ commenter.
+  Encodage (UTF-8, Latin-1) et fins de ligne sont conservés et affichés dans
+  la barre d'état ; l'enregistrement est atomique (jamais de fichier à moitié
+  écrit). Un fichier modifié ailleurs (par Seldon, Claude Code…) est rechargé
+  automatiquement. Créer ou renommer refuse les chemins absolus et `..`, et
+  n'écrase jamais un fichier existant.
 - **▤ Journal** (Ctrl+3) : menu **Seldon** › Lancer (F5, mode vocal) ou
   Lancer en mode texte (Ctrl+F5), Arrêter (Maj+F5). Le programme principal
   tourne dans un sous-processus et ses logs s'affichent en direct
-  (avertissements en ambre, erreurs en rouge) ; en mode texte, le champ sous
-  le journal envoie les messages à Seldon. Quand une action demande une
-  confirmation (`confirm: console`), le Journal s'affiche, la question
-  apparaît en ambre et les boutons **Oui** / **Non** (ou « o » / « n » dans le
-  champ) y répondent, en mode vocal comme en mode texte. En mode vocal, le
+  (avertissements en ambre, erreurs en rouge), filtrables par niveau (Tout,
+  Sans DEBUG, Avertissements, Erreurs) ; en mode texte, le champ sous le
+  journal envoie les messages à Seldon. Quand une action demande une
+  confirmation (`confirm: console`), le Journal s'affiche et la question
+  apparaît dans un bandeau ambre dont les boutons **Oui** / **Non** (ou « o » /
+  « n » dans le champ) y répondent, en mode vocal comme en mode texte. Seules
+  les questions de Seldon lui-même sont reconnues : chaque lancement reçoit un
+  jeton secret (`SELDON_GUI_TOKEN`, retiré aussitôt de l'environnement), et une
+  ligne qui imite la balise (sortie d'une commande, réponse du modèle) n'affiche
+  ni fausse question ni faux état du micro. **Arrêter** envoie Ctrl+C à Seldon
+  et à ses sous-processus, un second appui force l'arrêt, et fermer
+  l'interface arrête Seldon (rien ne garde le micro). En mode vocal, le
   bouton **🎙 Micro** (F6) coupe le micro sans arrêter Seldon : plus rien
   n'est entendu, pas même « stop », jusqu'à ce qu'on le rétablisse (signaux
   `SIGUSR1` / `SIGUSR2` du sous-processus, Linux / macOS). Des paramètres non
-  enregistrés sont proposés à l'enregistrement avant le lancement.
+  enregistrés sont proposés à l'enregistrement avant le lancement. Dans les
+  Paramètres, faire défiler la page ne modifie jamais un champ, et
+  `config.yaml` est validé puis écrit de façon atomique ; s'il est illisible,
+  l'erreur s'affiche avec sa ligne et sa colonne.
 
 Thème néomorphique « cassette futurism », accent vert, en variante claire ou
 sombre (Affichage › Thème, bouton ☾/☀ ou Ctrl+Maj+L ; « Automatique » suit le
@@ -130,7 +144,9 @@ installer sur le système ; IBM Plex à défaut). Couleurs et polices dans
 `seldon/gui/theme.py`, avec les espacements communs (`SPACE`, `PAD`,
 `SECTION`, `GUTTER`) : toute l'interface s'aligne sur ces valeurs, et aucune
 sélection (état « modifié », moteur choisi, onglet actif) ne déplace les
-éléments.
+éléments. Les textes respectent un contraste d'au moins 4,5:1 (WCAG AA) dans
+les deux thèmes, le focus clavier est entouré de vert, et les boutons à icône
+(☾/☀, 🎙, ✕…) ont un nom lisible par les lecteurs d'écran.
 
 ### Mémoire des conversations
 

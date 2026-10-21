@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import yaml
-from PySide6.QtCore import QFileSystemWatcher, QRect, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QFileSystemWatcher, QObject, QRect, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QStackedWidget,
@@ -23,6 +23,7 @@ from ruamel.yaml.scalarstring import ScalarString
 from seldon.config import Config
 from seldon.core.errors import describe
 from seldon.gui import configdoc, theme
+from seldon.gui.fsutil import write_atomic
 from seldon.gui.plugins import MISSING, Param, PluginInfo, choices_from_comment, class_params, discover
 from seldon.gui.records import ConversationsView, RecordsView, SpeakersView
 
@@ -39,6 +40,30 @@ FIXED_CHOICES = {
     "log_level": ["DEBUG", "INFO", "WARNING", "ERROR"],
     "compute_type": ["int8", "int8_float16", "float16", "float32"],
 }
+INT_RANGE = 1_000_000_000   # au-delà (ou décimales plus fines que DECIMALS) : saisie YAML, sans arrondi
+DECIMALS = 3
+
+
+class _WheelGuard(QObject):
+    """La molette fait défiler la page au lieu de changer la valeur d'un champ qu'on survole.
+
+    Sans cela, faire défiler le formulaire modifie au passage nombres et listes déroulantes.
+    """
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.Wheel and isinstance(obj, QWidget) and not obj.hasFocus():
+            event.ignore()   # remonte jusqu'à la zone de défilement
+            return True
+        return False
+
+
+_wheel_guard = _WheelGuard()
+
+
+def guard_wheel(widget: QWidget) -> QWidget:
+    widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)   # clic ou Tab avant la molette
+    widget.installEventFilter(_wheel_guard)
+    return widget
 
 
 def _yaml_inline(value: Any) -> str:
@@ -67,29 +92,31 @@ def make_editor(value: Any, choices: list[str], on_change: Callable[[Any], None]
         w.setChecked(value)
         w.toggled.connect(on_change)
         return w
-    if isinstance(value, int):
-        w = QSpinBox(minimum=-1_000_000_000, maximum=1_000_000_000)
+    if isinstance(value, int) and abs(value) <= INT_RANGE:
+        w = guard_wheel(QSpinBox(minimum=-INT_RANGE, maximum=INT_RANGE))
         w.setValue(value)
         w.valueChanged.connect(on_change)
         return w
-    if isinstance(value, float):
-        w = QDoubleSpinBox(minimum=-1e9, maximum=1e9, decimals=3, singleStep=0.05)
+    if isinstance(value, float) and abs(value) <= INT_RANGE and round(value, DECIMALS) == value:
+        w = guard_wheel(QDoubleSpinBox(minimum=-INT_RANGE, maximum=INT_RANGE, decimals=DECIMALS, singleStep=0.05))
         w.setValue(value)
         w.valueChanged.connect(on_change)
         return w
     if isinstance(value, str):
         style = type(value) if isinstance(value, ScalarString) else str   # garde les guillemets d'origine
         if choices:
-            w = QComboBox(editable=True)
+            w = guard_wheel(QComboBox(editable=True))
             w.addItems(choices if value in choices else [value, *choices])
             w.setCurrentText(value)
             w.currentTextChanged.connect(lambda t: on_change(style(t)))
             return w
         w = QLineEdit(value)
+        w.setCursorPosition(0)   # champ étroit : on voit le début de la valeur, pas sa fin
         w.textEdited.connect(lambda t: on_change(style(t)))
         return w
-    # null, listes, dictionnaires : saisie YAML en ligne ([a, b], {k: v}, vide = null)
+    # null, listes, dictionnaires, nombres hors limites : saisie YAML en ligne ([a, b], {k: v}, vide = null)
     w = QLineEdit(_yaml_inline(value), placeholderText="null")
+    w.setCursorPosition(0)
     w.setToolTip("Valeur YAML : texte, nombre, [liste], {clé: valeur} ; vide = null")
 
     def edited(text: str) -> None:
@@ -184,6 +211,7 @@ class OptionsForm(QWidget):
         self.grid.addWidget(hint_label(hint), row, 2)
         if self.extensible:
             remove = QToolButton(text="✕", toolTip="Retirer l'option (valeur par défaut du moteur)", autoRaise=True)
+            remove.setAccessibleName(f"Retirer l'option {key}")
             remove.clicked.connect(lambda _=False, k=key: self._remove(k))
             self.grid.addWidget(remove, row, 3)
 
@@ -193,7 +221,8 @@ class OptionsForm(QWidget):
         self.rebuild()
 
     def _add_adder(self, row: int) -> None:
-        box = QComboBox(editable=True)
+        box = guard_wheel(QComboBox(editable=True))
+        box.setAccessibleName("Nouvelle option")
         box.lineEdit().setPlaceholderText("nouvelle option…")
         missing = [k for k in self.known if k not in self.mapping]
         for k in missing:
@@ -223,7 +252,8 @@ class OptionsForm(QWidget):
 
 
 def _engine_combo(plugins: dict[str, PluginInfo], current: str) -> QComboBox:
-    combo = QComboBox(editable=True)
+    combo = guard_wheel(QComboBox(editable=True))
+    combo.setAccessibleName("Moteur")
     names = sorted(plugins)
     combo.addItems(names if current in names else [current, *names])
     for i in range(combo.count()):
@@ -331,6 +361,7 @@ class ActionsPage(QWidget):
                                     ("↓", "Descendre", lambda _=False, i=i: self._move(i, 1)),
                                     ("✕", "Retirer cette action", lambda _=False, i=i: self._remove(i))):
                 b = QToolButton(text=text, toolTip=tip, autoRaise=True)
+                b.setAccessibleName(f"{tip} : {node.get('engine', '')}")
                 b.clicked.connect(slot)
                 tools.addWidget(b)
             v.addLayout(tools)
@@ -339,7 +370,8 @@ class ActionsPage(QWidget):
             v.addWidget(stage)
             self.lay.addWidget(box)
         used = {str(self.actions[i].get("engine")) for i in range(len(self.actions))}
-        add_box = QComboBox(editable=True)
+        add_box = guard_wheel(QComboBox(editable=True))
+        add_box.setAccessibleName("Action à ajouter")
         add_box.addItems([n for n in sorted(self.plugins) if n not in used])
         for i in range(add_box.count()):
             add_box.setItemData(i, self.plugins[add_box.itemText(i)].doc, Qt.ItemDataRole.ToolTipRole)
@@ -386,6 +418,7 @@ class SettingsPanel(QWidget):
     saved = Signal(Path)
     open_requested = Signal(Path)
     dirty_changed = Signal(bool)
+    reloaded = Signal()   # formulaire reconstruit (config relue, valide ou non)
 
     def __init__(self, config_path: Path, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -443,7 +476,9 @@ class SettingsPanel(QWidget):
         lay.addLayout(body, 1)
 
         self.watcher = QFileSystemWatcher(self)
-        self.watcher.fileChanged.connect(lambda _p: QTimer.singleShot(150, self._disk_changed))
+        self._disk_timer = QTimer(self, singleShot=True, interval=150)   # une rafale de notifications = une relecture
+        self._disk_timer.timeout.connect(self._disk_changed)
+        self.watcher.fileChanged.connect(lambda _p: self._disk_timer.start())
         self.reload()
 
     # --- construction -------------------------------------------------------
@@ -478,13 +513,22 @@ class SettingsPanel(QWidget):
 
     def reload(self) -> None:
         row = max(self.nav.currentRow(), 0)
+        self.banner.hide()
+        text = None
         try:
-            self.disk_text = self.path.read_text(encoding="utf-8") if self.path.exists() else ""
-            self.doc = configdoc.loads(self.disk_text)
+            text = self.path.read_text(encoding="utf-8") if self.path.exists() else ""
+            self.disk_text = text
+            self.doc = configdoc.loads(text)
         except Exception as e:  # noqa: BLE001 — YAML invalide : on le dit et on propose l'éditeur
             self.doc = None
-            self.banner.setText(f"config.yaml illisible ({e}). Corrigez-le dans l'éditeur (« Ouvrir le YAML »).")
+            error = (validate(text) if text else None) or str(e)   # message en français, avec ligne et colonne
+            self.banner.setText(f"{self.path.name} est illisible, le formulaire est indisponible.\n{error}\n"
+                                "Corrigez-le dans l'éditeur (« Ouvrir le YAML ») : il sera relu dès son enregistrement.")
             self.banner.show()
+        else:
+            if not self.path.exists():
+                self.banner.setText(f"{self.path.name} n'existe pas encore : il sera créé à l'enregistrement.")
+                self.banner.show()
         if str(self.path) not in self.watcher.files() and self.path.exists():
             self.watcher.addPath(str(self.path))
         self.nav.clear()
@@ -496,9 +540,12 @@ class SettingsPanel(QWidget):
         self.title.setText(str(self.path).replace(str(Path.home()), "~", 1))
         self.title.setToolTip(str(self.path))
         if self.doc is None:
+            empty = hint_label("Formulaire indisponible tant que la configuration est illisible.")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.pages.addWidget(empty)
             self._set_dirty(False)
+            self.reloaded.emit()
             return
-        self.banner.hide()
 
         reserved = {k for k, _t, _c in SECTIONS} | {"actions", "memory"}
         general = OptionsForm(self.doc, {}, self._changed,
@@ -520,6 +567,7 @@ class SettingsPanel(QWidget):
         self._page("Actions", ActionsPage(actions, self.plugins.get("actions", {}), self._changed))
         self.nav.setCurrentRow(min(row, self.nav.count() - 1))
         self._set_dirty(False)
+        self.reloaded.emit()
 
     def _records(self, view: RecordsView) -> RecordsView:
         view.open_requested.connect(self.open_requested.emit)
@@ -564,8 +612,8 @@ class SettingsPanel(QWidget):
         if (error := validate(text)) is not None:
             QMessageBox.warning(self, "Configuration invalide", error)
             return False
-        try:
-            self.path.write_text(text, encoding="utf-8")
+        try:   # atomique, droits conservés : jamais de config.yaml à moitié écrit
+            write_atomic(self.path, text.encode("utf-8"))
         except OSError as e:
             QMessageBox.warning(self, "Enregistrement impossible", str(e))
             return False
@@ -594,7 +642,7 @@ class SettingsPanel(QWidget):
             self.watcher.addPath(str(self.path))
         try:
             text = self.path.read_text(encoding="utf-8")
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             return
         if text == self.disk_text:
             return

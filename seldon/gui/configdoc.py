@@ -14,6 +14,8 @@ from typing import Any
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
+from seldon.gui.fsutil import write_atomic
+
 STAGES = ("stt", "speakers", "brain", "tts")
 
 
@@ -54,7 +56,7 @@ def to_text(doc: CommentedMap) -> str:
 
 def save(doc: CommentedMap, path: str | Path) -> str:
     text = to_text(doc)
-    Path(path).write_text(text, encoding="utf-8")
+    write_atomic(path, text.encode("utf-8"))
     return text
 
 

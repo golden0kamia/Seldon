@@ -14,6 +14,8 @@ régénérées, cartes et éditeurs via leur méthode ``theme_changed``).
 
 from __future__ import annotations
 
+import atexit
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -23,8 +25,8 @@ from PySide6.QtGui import (
     QRadialGradient,
 )
 from PySide6.QtWidgets import (
-    QAbstractSpinBox, QApplication, QFrame, QHBoxLayout, QLabel, QSizePolicy, QToolButton, QVBoxLayout,
-    QWidget,
+    QAbstractButton, QAbstractSpinBox, QApplication, QFrame, QHBoxLayout, QLabel, QSizePolicy, QToolButton,
+    QVBoxLayout, QWidget,
 )
 
 # --- palettes --------------------------------------------------------------
@@ -35,13 +37,13 @@ LIGHT = dict(
     SHADOW_DARK="#b3a991",
     SHADOW_LIGHT="#fbf8f0",
     TEXT="#35302a",
-    MUTED="#857b69",
+    MUTED="#675d4b",         # contraste ≥ 4,5:1 sur BG et BG_HI (texte secondaire)
     ACCENT="#2f9d5c",        # vert d'accent
     ACCENT_HI="#4fd283",
     ACCENT_LO="#1d6e3e",
-    ACCENT_TEXT="#1d6e3e",   # vert lisible sur la surface
+    ACCENT_TEXT="#176037",   # vert lisible sur la surface (≥ 4,5:1, même creusée)
     SELECT_BG="rgba(47, 157, 92, 0.18)",
-    WARN="#c8553d",
+    WARN="#a23f28",
     CRT_BG="#141a15",
     CRT_GUTTER="#0f1410",
     SHADOW_STRENGTH=1.0,
@@ -53,13 +55,13 @@ DARK = dict(
     SHADOW_DARK="#141210",
     SHADOW_LIGHT="#3e3a34",
     TEXT="#e8dfcf",
-    MUTED="#9c917e",
+    MUTED="#a89d8a",
     ACCENT="#3cb46c",
     ACCENT_HI="#5ee08f",
     ACCENT_LO="#22804a",
     ACCENT_TEXT="#62dc92",
     SELECT_BG="rgba(94, 224, 143, 0.16)",
-    WARN="#e0705a",
+    WARN="#e0846e",
     CRT_BG="#0e120f",
     CRT_GUTTER="#0a0d0b",
     SHADOW_STRENGTH=1.6,
@@ -67,13 +69,15 @@ DARK = dict(
 PALETTES = {"light": LIGHT, "dark": DARK}
 VARIANT = "light"
 
-# communs aux deux variantes
+# communs aux deux variantes (contrastes WCAG mesurés sur CRT_BG, l'écran le plus clair)
 ORANGE = "#d8612c"        # bandes de cassette (décor)
 AMBER = "#e6a23c"
+INK = "#1f1b16"           # encre sur les surfaces colorées (ambre, touche verte) : ≥ 4,9:1
 CRT_FG = "#9be8ad"
-CRT_DIM = "#4f7357"
+CRT_DIM = "#5d8f65"       # 4,7:1
+CRT_ERROR = "#ec7a64"     # erreurs dans le journal : 6,3:1
 CRT_SELECT = "#2b5a3a"
-SYNTAX = dict(keyword="#5ef08a", string="#e8b04a", comment="#5f7f64", number="#7fd9c6",
+SYNTAX = dict(keyword="#5ef08a", string="#e8b04a", comment="#6e8e73", number="#7fd9c6",
               key="#b5f2c3", builtin="#6fcbe6", decorator="#e8803a", heading="#5ef08a")
 
 # valeurs courantes (remplacées par set_variant)
@@ -103,6 +107,7 @@ def system_variant() -> str:
 
 
 _ICON_DIR = Path(tempfile.mkdtemp(prefix="seldon-gui-icons-"))
+atexit.register(shutil.rmtree, _ICON_DIR, True)   # pas de dossier temporaire laissé à chaque lancement
 
 _ICONS = {  # nom -> (tracé SVG, couleur)
     "chevron-down": ('<path d="M4 6l4 4 4-4" {stroke}/>', "MUTED"),
@@ -199,37 +204,42 @@ QWidget {{ color: {TEXT}; }}
 QToolTip {{ background: {CRT_BG}; color: {CRT_FG}; border: 1px solid {ACCENT_LO}; padding: 6px 8px;
             font-family: "{mono}"; border-radius: 6px; }}
 
-/* boutons : touches d'appareil en relief */
+/* boutons : touches d'appareil en relief ; liseré vert = focus clavier (un clic ne le donne pas) */
 QPushButton {{ {_raised()} border-radius: 12px; padding: 7px 18px; min-height: 18px; }}
 QPushButton:hover {{ color: {ACCENT_TEXT}; }}
+QPushButton:focus {{ border: 1px solid {ACCENT_TEXT}; }}
 QPushButton:pressed {{ {_inset()} padding-top: 8px; padding-bottom: 6px; }}
 QPushButton:disabled {{ color: {MUTED}; background: {BG}; border-color: {BG}; }}
-QPushButton#primary {{ color: white;
+QPushButton#primary {{ color: {INK};
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {ACCENT_HI}, stop:1 {ACCENT});
     border: 1px solid {ACCENT}; border-top-color: #8de6ac; border-left-color: #8de6ac;
     border-bottom-color: {ACCENT_LO}; border-right-color: {ACCENT_LO}; }}
-QPushButton#primary:pressed {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {ACCENT_LO}, stop:1 {ACCENT}); }}
+QPushButton#primary:focus {{ border: 1px solid {INK}; }}
+QPushButton#primary:pressed {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {ACCENT}, stop:1 {ACCENT_HI}); }}
 QPushButton#primary:disabled {{ color: {MUTED}; background: {BG}; border-color: {BG}; }}
 
 QToolButton {{ {_raised()} border-radius: 10px; padding: 3px; min-width: 20px; min-height: 20px; }}
 QToolButton:hover {{ color: {ACCENT_TEXT}; }}
+QToolButton:focus {{ border: 1px solid {ACCENT_TEXT}; }}
 QToolButton:pressed, QToolButton:checked {{ {_inset()} color: {ACCENT_TEXT}; }}
 QToolButton#mode {{ font-family: "{mono}"; font-size: 10pt; padding: 6px 16px; border-radius: 13px; color: {MUTED}; }}
 QToolButton#mode:hover {{ color: {TEXT}; }}
 QToolButton#mode:checked {{ {_inset()} color: {ACCENT_TEXT}; }}
+QToolButton#mode:focus {{ border: 1px solid {ACCENT_TEXT}; }}
 QToolButton[autoRaise="true"] {{ background: transparent; border: none; color: {MUTED}; }}
 QToolButton[autoRaise="true"]:hover {{ color: {WARN}; }}
+QToolButton[autoRaise="true"]:focus {{ background: {SELECT_BG}; color: {ACCENT_TEXT}; border-radius: 6px; }}
 
 /* champs : creusés dans la coque */
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{ {_inset()} border-radius: 10px; padding: 5px {FIELD_PAD}px;
-    min-height: 20px; selection-background-color: {ACCENT}; selection-color: white; font-family: "{mono}"; }}
+    min-height: 20px; selection-background-color: {ACCENT_LO}; selection-color: white; font-family: "{mono}"; }}
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
     border: 1px solid {ACCENT}; border-top-color: {ACCENT_LO}; border-left-color: {ACCENT_LO}; }}
 QLineEdit[invalid="true"] {{ border: 1px solid {WARN}; }}
 QComboBox::drop-down {{ border: none; width: 26px; }}
 QComboBox::down-arrow {{ image: {icon("chevron-down")}; width: 14px; height: 14px; margin-right: 8px; }}
 QComboBox QAbstractItemView {{ background: {BG_HI}; border: 1px solid {SHADOW_DARK}; border-radius: 8px; padding: 4px;
-    selection-background-color: {ACCENT}; selection-color: white; outline: 0; }}
+    selection-background-color: {ACCENT_LO}; selection-color: white; outline: 0; }}
 QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{
     border: none; width: 20px; background: transparent; margin-right: 4px; }}
 QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{ image: {icon("chevron-up")}; width: 11px; height: 11px; }}
@@ -241,6 +251,8 @@ QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 9px; {_inset()
 QCheckBox::indicator:checked {{ border: 1px solid {ACCENT_LO};
     background: qradialgradient(cx:0.4, cy:0.35, radius:0.7, fx:0.35, fy:0.3,
                 stop:0 #d9ffe6, stop:0.35 {ACCENT_HI}, stop:1 {ACCENT_LO}); }}
+QCheckBox::indicator:focus {{ border: 1px solid {ACCENT_TEXT}; }}
+QCheckBox::indicator:checked:focus {{ border: 1px solid {TEXT}; }}
 
 /* onglets : languettes en relief, l'actif enfoncé et éclairé */
 QTabWidget::pane {{ border: none; }}
@@ -282,7 +294,7 @@ QMenuBar::item {{ padding: 5px {PAD}px; border-radius: 8px; background: transpar
 QMenuBar::item:selected {{ {_inset()} color: {ACCENT_TEXT}; }}
 QMenu {{ background: {BG_HI}; border: 1px solid {SHADOW_DARK}; border-radius: 10px; padding: 6px; }}
 QMenu::item {{ padding: 6px 22px 6px 14px; border-radius: 7px; }}
-QMenu::item:selected {{ background: {ACCENT}; color: white; }}
+QMenu::item:selected {{ background: {ACCENT_LO}; color: white; }}
 QMenu::separator {{ height: 1px; background: {SHADOW_DARK}; margin: 5px 8px; }}
 QMenu::indicator {{ width: 12px; height: 12px; border-radius: 6px; margin-left: 4px; {_inset()} }}
 QMenu::indicator:checked {{ background: {ACCENT_HI}; border: 1px solid {ACCENT_LO}; }}
@@ -299,7 +311,9 @@ QPlainTextEdit#code {{ background: {CRT_BG}; color: {CRT_FG}; border: none; font
     selection-background-color: {CRT_SELECT}; selection-color: #e6ffec; }}
 QPlainTextEdit#code QScrollBar::handle {{ background: {CRT_DIM}; }}
 QWidget#findbar {{ background: transparent; }}
-QLabel#banner {{ background: {AMBER}; color: #2a2520; padding: {SPACE}px {PAD}px; border-radius: 9px; }}
+QLabel#banner {{ background: {AMBER}; color: {INK}; padding: {SPACE}px {PAD}px; border-radius: 9px; }}
+QFrame#confirmbar {{ background: {AMBER}; border-radius: 12px; }}
+QFrame#confirmbar QLabel {{ color: {INK}; }}
 QLabel#hint {{ color: {MUTED}; }}
 QLabel#findinfo {{ color: {WARN}; }}
 QLabel#pageTitle {{ color: {TEXT}; }}
@@ -308,20 +322,32 @@ QScrollArea#imageview > QWidget > QWidget {{ background: {CRT_BG}; }}
 """
 
 
-class _SpinBoxPadding(QObject):
-    """Aligne le texte des champs numériques sur celui des champs texte.
+class _Polish(QObject):
+    """Retouches appliquées à chaque widget quand il est préparé.
 
-    Le champ interne d'un QSpinBox ignore le ``padding`` de la feuille de style :
-    on lui donne la même marge (padding + bordure) dès qu'il est préparé.
+    - Le champ interne d'un QSpinBox ignore le ``padding`` de la feuille de style :
+      on lui donne la même marge (padding + bordure) que les champs texte.
+    - Boutons et cases ne prennent le focus qu'au clavier (Tab) : un clic ne vole
+      pas le focus du champ en cours, et le liseré de focus signale la navigation clavier.
+    - Le ``min-width`` des QToolButton impose une largeur minimale explicite qui passe
+      outre leur politique de taille : les boutons de mode (``#mode``) gardent leur
+      largeur naturelle au lieu d'être rognés en « … » quand la fenêtre rétrécit.
     """
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # noqa: N802
-        if event.type() == QEvent.Type.Polish and isinstance(obj, QAbstractSpinBox):
-            obj.lineEdit().setTextMargins(FIELD_PAD + 1, 0, 0, 0)
+        kind = event.type()
+        if kind == QEvent.Type.Polish:
+            if isinstance(obj, QAbstractSpinBox):
+                obj.lineEdit().setTextMargins(FIELD_PAD + 1, 0, 0, 0)
+            elif isinstance(obj, QAbstractButton) and obj.focusPolicy() == Qt.FocusPolicy.StrongFocus:
+                obj.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        if kind in (QEvent.Type.Polish, QEvent.Type.StyleChange) and isinstance(obj, QToolButton) \
+                and obj.objectName() == "mode":
+            obj.setMinimumWidth(obj.sizeHint().width())
         return False
 
 
-_spin_padding = _SpinBoxPadding()
+_spin_padding = _Polish()
 
 
 def apply(app: QApplication, variant: str = "auto") -> str:
@@ -335,7 +361,7 @@ def apply(app: QApplication, variant: str = "auto") -> str:
     for role, color in [
         (QPalette.ColorRole.Window, BG), (QPalette.ColorRole.Base, BG_HI), (QPalette.ColorRole.AlternateBase, BG),
         (QPalette.ColorRole.Button, BG), (QPalette.ColorRole.Text, TEXT), (QPalette.ColorRole.WindowText, TEXT),
-        (QPalette.ColorRole.ButtonText, TEXT), (QPalette.ColorRole.Highlight, ACCENT),
+        (QPalette.ColorRole.ButtonText, TEXT), (QPalette.ColorRole.Highlight, ACCENT_LO),
         (QPalette.ColorRole.HighlightedText, "#ffffff"), (QPalette.ColorRole.PlaceholderText, MUTED),
         (QPalette.ColorRole.ToolTipBase, CRT_BG), (QPalette.ColorRole.ToolTipText, CRT_FG),
         (QPalette.ColorRole.Link, ACCENT_TEXT),
@@ -463,6 +489,9 @@ class Stripes(QWidget):
         super().__init__(parent)
         self.setFixedSize(width, height)
 
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return self.maximumSize()
+
     def paintEvent(self, event) -> None:  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -528,7 +557,12 @@ class Masthead(QWidget):
         f.setWeight(QFont.Weight.Bold)
         f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 6)
         name.setFont(f)
-        model = caption("Assistant vocal · console de configuration · mk-1")
+        self.model = caption("Assistant vocal · console de configuration · mk-1")
+        self.stripes = Stripes()
+        # décor facultatif : n'impose pas sa largeur, masqué si la fenêtre est étroite (resizeEvent)
+        self.optional = (self.model, self.stripes)
+        for w in self.optional:
+            w.setMinimumWidth(1)
         self.led = Led(12)
         self.state = caption(self.LONGEST_STATE)
         self.state.setFixedWidth(self.state.sizeHint().width())   # place du texte le plus long : rien ne bouge
@@ -540,11 +574,13 @@ class Masthead(QWidget):
                                         ("✎  ÉDITEUR", "Fichiers et éditeur de texte (Ctrl+2)"),
                                         ("▤  JOURNAL", "Lancer Seldon et suivre ses logs (Ctrl+3)"))):
             b = QToolButton(text=text, toolTip=tip, checkable=True, autoExclusive=True, objectName="mode")
+            b.setAccessibleName(text.split(maxsplit=1)[1].capitalize())
+            b.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)   # jamais rognés en « … »
             b.clicked.connect(lambda _=False, i=i: self.mode_changed.emit(i))
             modes.addWidget(b)
             self.mode_buttons.append(b)
         self.mode_buttons[0].setChecked(True)
-        self.variant_btn = QToolButton(toolTip="Basculer clair / sombre (Ctrl+Maj+L)")
+        self.variant_btn = QToolButton()
         self.variant_btn.setFont(ui_font(11))
         self.variant_btn.setFixedSize(30, 30)   # ☀ et ☾ n'ont pas la même largeur
         self.variant_btn.clicked.connect(self.toggle_variant.emit)
@@ -553,8 +589,8 @@ class Masthead(QWidget):
         lay.setContentsMargins(GUTTER, SPACE, GUTTER, 0)
         lay.setSpacing(SECTION)
         lay.addWidget(name)
-        lay.addWidget(Stripes())
-        lay.addWidget(model)
+        lay.addWidget(self.stripes)
+        lay.addWidget(self.model)
         lay.addStretch(1)
         lay.addLayout(modes)
         lay.addStretch(1)
@@ -571,8 +607,24 @@ class Masthead(QWidget):
 
     def set_state(self, text: str, color: str | None) -> None:
         self.state.setText(text)
+        self.state.setAccessibleName(f"État : {text}")
         self.led.set_color(color)
 
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        """Fenêtre étroite : la mention « assistant vocal… » puis les bandes s'effacent, les boutons restent entiers."""
+        super().resizeEvent(event)
+        lay = self.layout()
+        need = lay.sizeHint().width() + sum(w.sizeHint().width() + lay.spacing()
+                                            for w in self.optional if not w.isVisibleTo(self))
+        for w in self.optional:
+            w.setVisible(event.size().width() >= need)
+            if not w.isVisibleTo(self):
+                need -= w.sizeHint().width() + lay.spacing()
+
     def theme_changed(self) -> None:
-        self.variant_btn.setText("☀" if VARIANT == "dark" else "☾")
+        dark = VARIANT == "dark"
+        self.variant_btn.setText("☀" if dark else "☾")
+        name = "Passer au thème clair" if dark else "Passer au thème sombre"
+        self.variant_btn.setAccessibleName(name)
+        self.variant_btn.setToolTip(f"{name} (Ctrl+Maj+L)")
         self.led.update()

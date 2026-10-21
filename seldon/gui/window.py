@@ -80,10 +80,12 @@ class MainWindow(QMainWindow):
         self.settings.open_requested.connect(self.open_path)
         self.settings.saved.connect(self._settings_saved)
         self.settings.dirty_changed.connect(lambda _d: self._update_status())
+        self.settings.reloaded.connect(self._update_status)
         self.editors.opened.connect(lambda: self.show_page(EDITOR_PAGE))
         self.editors.current_changed.connect(self._update_status)
         self.editors.saved.connect(lambda p: self.statusBar().showMessage(f"Enregistré : {p}", 3000))
         self.runner.running_changed.connect(self._running_changed)
+        self.runner.state_changed.connect(self._runner_state)
         self.runner.confirmation_requested.connect(self._confirmation_requested)
 
         self._build_menus()
@@ -121,14 +123,14 @@ class MainWindow(QMainWindow):
         self.run_actions = {
             "start": act("▶ &Lancer (mode vocal)", lambda: self.launch(text=False), "F5"),
             "text": act("▶ Lancer en mode &texte", lambda: self.launch(text=True), "Ctrl+F5"),
-            "stop": act("■ &Arrêter", self.runner.stop, "Shift+F5"),
+            "stop": act("■ &Arrêter", lambda: self.runner.stop(), "Shift+F5"),
             "mute": act("🔇 &Couper / rétablir le micro", self.runner.mic_btn.toggle, "F6"),
         }
         for a in self.run_actions.values():
             run.addAction(a)
         run.addSeparator()
         run.addAction(act("▤ &Journal en direct", lambda: self.show_page(LOGS_PAGE), "Ctrl+3"))
-        run.addAction(act("&Effacer le journal", self.runner.log.clear))
+        run.addAction(act("&Effacer le journal", self.runner.clear))
         self._running_changed(False)
 
         view = self.menuBar().addMenu("&Affichage")
@@ -164,10 +166,15 @@ class MainWindow(QMainWindow):
     def show_page(self, index: int) -> None:
         self.pages.setCurrentIndex(index)
         self.masthead.set_mode(index)
+        # focus sur l'élément principal de la page (sinon le premier bouton, liseré compris)
         if index == EDITOR_PAGE:
             self.editors.ensure_document()
             if (tab := self.editors.current()) and tab.editor:
                 tab.editor.setFocus()
+        elif index == LOGS_PAGE:
+            (self.runner.input if self.runner.input.isEnabled() else self.runner.log).setFocus()
+        else:
+            self.settings.nav.setFocus()
         self._update_status()
 
     # --- programme principal -------------------------------------------------
@@ -182,7 +189,11 @@ class MainWindow(QMainWindow):
         self.run_actions["start"].setEnabled(not running)
         self.run_actions["text"].setEnabled(not running)
         self.run_actions["stop"].setEnabled(running)
-        self.run_actions["mute"].setEnabled(running)   # sans effet tant que Seldon n'a rien écrit
+        self._runner_state()
+
+    def _runner_state(self) -> None:
+        if hasattr(self, "run_actions"):
+            self.run_actions["mute"].setEnabled(self.runner.can_mute)   # mode vocal, une fois Seldon prêt
         self._update_status()
 
     def _confirmation_requested(self, question: str) -> None:
@@ -240,17 +251,24 @@ class MainWindow(QMainWindow):
         self.files.set_roots(project_roots(self.project, self.settings.doc), self.files.recent)
 
     def _update_status(self) -> None:
-        pending = self.settings.dirty + sum(t.modified for t in self.editors.file_tabs())
-        if pending:
+        pending =self.settings.dirty + sum(t.modified for t in self.editors.file_tabs())
+        if self.runner.pending:
+            self.masthead.set_state("confirmation demandée", theme.AMBER)
+        elif pending:
             self.masthead.set_state(f"{pending} modif. non enregistrée(s)", theme.AMBER)
         elif self.runner.running:
             self.masthead.set_state("seldon en marche", theme.ACCENT_HI)
+        elif self.runner.failed:
+            self.masthead.set_state("arrêt sur erreur", theme.WARN)
+        elif self.settings.doc is None:
+            self.masthead.set_state("config. illisible", theme.WARN)
         else:
             self.masthead.set_state("prêt", theme.ACCENT_HI)
         tab = self.editors.current()
         if self.pages.currentIndex() == EDITOR_PAGE and isinstance(tab, FileTab) and tab.editor:
             c = tab.editor.textCursor()
-            self.position.setText(f"{tab.editor.language.upper()}  ·  LN {c.blockNumber() + 1:>4}  COL {c.positionInBlock() + 1:>3}")
+            fmt = f"  ·  {tab.format_label}" if tab.format_label else ""   # ex. LATIN-1 · CRLF
+            self.position.setText(f"{tab.editor.language.upper()}{fmt}  ·  LN {c.blockNumber() + 1:>4}  COL {c.positionInBlock() + 1:>3}")
             self.setWindowTitle(f"{tab.title} — Seldon")
         else:
             self.position.setText("")

@@ -288,7 +288,8 @@ def test_logs_page_answers_confirmation_in_voice_mode(window, qapp, monkeypatch)
     from seldon.gui.window import LOGS_PAGE
 
     r = window.runner
-    script = ("import sys; print('\\n[confirmation] Lancer ls ? [o/N]', flush=True); "
+    script = ("import os, sys; print(f'\\n[confirmation {os.environ[\"SELDON_GUI_TOKEN\"]}] Lancer ls ? [o/N]', "
+              "flush=True); "
               "print('réponse', sys.stdin.readline().strip(), flush=True)")
     monkeypatch.setattr(r, "arguments", lambda text: ["-c", script])
     window.launch(text=False)
@@ -345,3 +346,242 @@ def test_logs_page_mutes_microphone_with_signals(window, qapp, monkeypatch):
     wait(lambda: not r.running)
     assert "[micro] rétabli" in r.log.toPlainText()
     assert not r.mic_btn.isChecked() and not r.mic_btn.isEnabled()
+
+
+# --- robustesse ----------------------------------------------------------------
+
+def test_plugin_scan_survives_odd_sources(tmp_path):
+    from seldon.gui.plugins import scan_file
+
+    (tmp_path / "a.py").write_text('@register("tts", "x")\nclass X:\n    def __init__(self, s={[]}, n=-1): ...\n',
+                                   encoding="utf-8")
+    (tmp_path / "b.py").write_bytes(b'@register("tts", "y")\nclass Y: pass\n\0')   # octet nul : ValueError
+    (tmp_path / "c.py").write_text("@register(\n", encoding="utf-8")
+    [info] = scan_file(tmp_path / "a.py")
+    assert info.params["s"].default_src == "{[]}" and info.params["n"].default == -1
+    assert scan_file(tmp_path / "b.py") == [] and scan_file(tmp_path / "c.py") == []
+
+
+def test_voice_samples_rejects_malformed_headers(tmp_path):
+    from seldon.gui.records import voice_samples
+
+    def npy(name: str, header: bytes, size: int | None = None) -> Path:
+        p = tmp_path / name
+        size = len(header) if size is None else size
+        p.write_bytes(b"\x93NUMPY\x01\x00" + size.to_bytes(2, "little") + header)
+        return p
+
+    assert voice_samples(npy("ok.npy", b"{'descr': '<f4', 'fortran_order': False, 'shape': (3, 256), }")) == 3
+    assert voice_samples(npy("plat.npy", b"{'shape': 5}")) is None          # forme non tuple
+    assert voice_samples(npy("texte.npy", b"{'shape': ('a', 1)}")) is None
+    assert voice_samples(npy("code.npy", b"__import__('os')")) is None      # jamais exécuté
+    assert voice_samples(npy("court.npy", b"{", size=60_000)) is None       # tronqué
+    assert voice_samples(npy("rec.npy", b"(" * 5000)) is None               # récursion
+    (tmp_path / "six.npy").write_bytes(b"\x93NUMPY")
+    assert voice_samples(tmp_path / "six.npy") is None
+
+
+def test_check_name_refuses_paths_outside_folder():
+    from seldon.gui.files import check_name
+
+    assert check_name("notes.md") is None and check_name("src/notes.md", nested=True) is None
+    for bad in ("../x", "/etc/passwd", "a/../../b", ".", "..", "a//b"):
+        assert check_name(bad, nested=True) is not None, bad
+    assert check_name("a/b") is not None   # renommage : pas de « / »
+
+
+def test_new_file_never_overwrites_or_follows_links(window, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QInputDialog, QMessageBox
+
+    folder = tmp_path / "projet"
+    target = tmp_path / "ailleurs.txt"
+    (folder / "lien").symlink_to(target)          # lien cassé vers un fichier hors du dossier
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: warnings.append(a[2]))
+    for name in ("lien", "main.py", "../evasion.txt"):
+        monkeypatch.setattr(QInputDialog, "getText", lambda *a, n=name, **k: (n, True))
+        window.files.new_file(folder)
+    assert not target.exists() and not (tmp_path / "evasion.txt").exists()
+    assert (folder / "main.py").read_text(encoding="utf-8") == "print('bonjour')\n"
+    assert len(warnings) == 3
+
+
+def test_file_tree_shows_root_inside_hidden_folder(window, tmp_path):
+    hidden = tmp_path / ".cache" / "projet"
+    (hidden / "sous").mkdir(parents=True)
+    window.files.set_root(hidden)
+    root = window.files.tree.rootIndex()
+    assert root.isValid() and window.files.path_at(root) == hidden.resolve()
+
+
+def test_editor_keeps_encoding_newlines_and_permissions(window, tmp_path):
+    path = tmp_path / "projet" / "vieux.txt"
+    path.write_bytes("caf\xe9\r\nligne 2\r\n".encode("latin-1"))
+    path.chmod(0o640)
+    tab = window.editors.open_file(path)
+    assert tab.editor.toPlainText() == "café\nligne 2\n" and tab.format_label == "LATIN-1 · CRLF"
+    tab.editor.appendPlainText("fin")
+    assert window.editors.save(tab)
+    assert path.read_bytes() == "caf\xe9\r\nligne 2\r\n\r\nfin".encode("latin-1")
+    assert path.stat().st_mode & 0o777 == 0o640
+    assert not list(path.parent.glob(".vieux.txt.*"))   # pas de fichier temporaire oublié
+
+
+def test_big_file_is_not_highlighted(window, tmp_path):
+    from seldon.gui.editor import HIGHLIGHT_MAX
+
+    path = tmp_path / "projet" / "gros.py"
+    path.write_text("x = 1\n" * (HIGHLIGHT_MAX // 6 + 10), encoding="utf-8")
+    tab = window.editors.open_file(path)
+    assert tab.editor.language == "python" and tab.editor.highlighter is None
+    small = window.editors.open_file(tmp_path / "projet" / "main.py")
+    assert small.editor.highlighter is not None
+
+
+def test_settings_keep_out_of_range_numbers(window):
+    from PySide6.QtWidgets import QLineEdit, QSpinBox
+
+    from seldon.gui.settings import make_editor
+
+    assert isinstance(make_editor(5, [], lambda v: None), QSpinBox)
+    big = make_editor(4_294_967_296, [], lambda v: None)
+    fine = make_editor(0.0001, [], lambda v: None)
+    assert isinstance(big, QLineEdit) and big.text() == "4294967296"   # pas d'écrêtage à 1e9
+    assert isinstance(fine, QLineEdit) and fine.text() == "0.0001"     # pas d'arrondi à 0,000
+
+
+def test_settings_save_is_atomic_and_keeps_permissions(window, tmp_path):
+    path = tmp_path / "config.yaml"
+    path.chmod(0o600)
+    window.settings.doc["log_level"] = "DEBUG"
+    window.settings._changed()
+    assert window.settings.save()
+    assert "log_level: DEBUG" in path.read_text(encoding="utf-8")
+    assert path.stat().st_mode & 0o777 == 0o600 and not list(tmp_path.glob(".config.yaml.*"))
+
+
+def test_invalid_config_is_explained_in_french(window, tmp_path):
+    (tmp_path / "config.yaml").write_text("log_level: [\n", encoding="utf-8")
+    window.settings.reload()
+    s = window.settings
+    assert s.doc is None and not s.banner.isHidden()
+    assert "ligne 2" in s.banner.text() and "Ouvrir le YAML" in s.banner.text()
+    assert window.masthead.state.text() == "config. illisible"
+
+
+def test_conversation_records_are_cached_and_robust(tmp_path, qapp):
+    import json
+
+    from seldon.gui import records
+
+    (tmp_path / "c1.json").write_text(json.dumps(dict(created=0, updated="hier", brain="x")), encoding="utf-8")
+    (tmp_path / "c2.json").write_text(json.dumps(dict(
+        id="../../secret", created=0, updated=0, brain="x", title="Bizarre", inconnu=1,
+        transcript=[{"role": "user", "text": "sans date"}])), encoding="utf-8")
+    (tmp_path / "c3.json").write_bytes(b"\xff\xfe pas du JSON")
+    first = records.conversations(tmp_path)
+    assert records.conversations(tmp_path) is first          # rien n'a changé : pas de relecture
+    view = records.ConversationsView(lambda: tmp_path)
+    assert view.list.count() == 1                              # c1 (date invalide) et c3 ignorés, sans exception
+    view.modes[1].click()
+    assert "sans date" in view.detail.text()
+    opened = []
+    view.open_requested.connect(opened.append)
+    view.open_btn.click()
+    assert opened == [(tmp_path / "c2.json").resolve()]       # l'id vient du nom du fichier, pas du JSON
+
+
+def test_journal_lines_levels_progress_and_confirmation(window):
+    from seldon.gui import runner as rmod
+
+    r = window.runner
+    r.clear()
+    r.feed("2026 ERROR seldon: échec\n  → piste\n")
+    r.feed("téléchargement 10 %\rtéléchargement 50 %\r")        # barre de progression
+    r.feed("\ntéléchargement 100 %\n")
+    r.feed("2026 DEBUG seldon: détail\nlog cité : [confirmation] faux ? [o/N]\n")
+    r.feed("2026 INFO x: début\r")                              # « \r\n » coupé entre deux lectures
+    r.feed("\n")
+    r._flush()
+    lines = r.log.toPlainText().split("\n")
+    assert lines[:2] == ["2026 ERROR seldon: échec", "  → piste"]
+    assert "téléchargement 50 %" in lines and "téléchargement 10 %" not in lines
+    assert "téléchargement 100 %" in lines and "2026 INFO x: début" in lines
+    assert not r.pending                                        # tag pas en début de ligne : ignoré
+    doc = r.log.document()
+    assert doc.findBlockByNumber(1).userState() == rmod.ERROR   # la suite indentée hérite du niveau
+    r.set_min_level(rmod.WARNING)
+    blocks = [doc.findBlockByNumber(i) for i in range(doc.blockCount())]
+    assert [b.text() for b in blocks if b.isVisible()] == ["2026 ERROR seldon: échec", "  → piste"]
+    r.set_min_level(0)
+
+
+def test_journal_decodes_utf8_split_across_reads(window):
+    r = window.runner
+    r.clear()
+    data = "é ✓\n".encode("utf-8")
+    for i in range(len(data)):
+        r.feed(r._decoder.decode(data[i:i + 1]))
+    r._flush()
+    assert r.log.toPlainText() == "é ✓"
+
+
+def test_stop_also_ends_child_processes(window, qapp, monkeypatch):
+    import os
+    import signal
+    import time
+
+    from PySide6.QtCore import QDeadlineTimer
+
+    from seldon.gui import runner as rmod
+
+    if not rmod.NEW_SESSION:
+        pytest.skip("groupes de processus POSIX")
+    r = window.runner
+    script = ("import subprocess, sys, time\n"
+              "p = subprocess.Popen([sys.executable, '-c', 'import signal, time; "
+              "signal.signal(signal.SIGINT, signal.SIG_IGN); time.sleep(60)'])\n"
+              "print('enfant', p.pid, flush=True)\n"
+              "time.sleep(60)\n")
+    monkeypatch.setattr(r, "arguments", lambda text: ["-c", script])
+    r.start()
+    deadline = QDeadlineTimer(10000)
+    while "enfant" not in r.log.toPlainText() and not deadline.hasExpired():
+        r.process.waitForReadyRead(50)
+        qapp.processEvents()
+        r._flush()
+    child = int(r.log.toPlainText().split("enfant ")[1].split()[0])
+    r.stop(wait=True)   # Ctrl+C au groupe (que l'enfant ignore), puis SIGTERM aux restes
+    assert not r.running
+    for _ in range(100):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        os.kill(child, signal.SIGKILL)
+        pytest.fail("sous-processus orphelin")
+
+
+def test_masthead_drops_caption_before_squeezing_buttons(window, qapp):
+    window.show()
+    window.resize(900, 600)
+    qapp.processEvents()
+    m = window.masthead
+    assert m.model.isHidden()
+    assert all(b.width() >= b.sizeHint().width() for b in m.mode_buttons)
+    window.resize(1400, 850)
+    qapp.processEvents()
+    assert not m.model.isHidden()
+
+
+def test_journal_ignores_tags_without_launch_token(window):
+    r = window.runner
+    r.clear()
+    r._token = "jeton"   # comme après un lancement
+    r.feed("[confirmation] Exécuter rm -rf ~ ? [o/N]\n[micro] coupé\n")   # imitées : sortie d'une commande…
+    assert not r.pending and not r.mic_btn.isChecked()
+    r.feed("[confirmation jeton] Lancer ls ? [o/N]\n")
+    r._flush()
+    assert r.pending and "jeton" not in r.log.toPlainText() and "[confirmation] Lancer ls" in r.log.toPlainText()

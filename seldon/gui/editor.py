@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import re
 from pathlib import Path
 from typing import Callable
@@ -17,8 +18,10 @@ from PySide6.QtWidgets import (
 )
 
 from seldon.gui import theme
+from seldon.gui.fsutil import write_atomic
 
 MAX_BYTES = 5 * 1024 * 1024
+HIGHLIGHT_MAX = 1024 * 1024   # au-delà, pas de coloration : elle figerait l'interface (~0,3 s par Mo)
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg"}
 
 LANGUAGES = {
@@ -35,6 +38,25 @@ def language_of(path: Path) -> str:
     if path.name in (".gitignore", ".env"):
         return "shell"
     return LANGUAGES.get(path.suffix.lower(), "text")
+
+
+def read_text(path: Path) -> tuple[str, str, str]:
+    """Texte d'un fichier (fins de ligne ``\\n``), son encodage et sa fin de ligne d'origine.
+
+    UTF-8 (avec ou sans BOM), sinon Latin-1 : décodage sans perte, le fichier est
+    réenregistré octet pour octet au lieu d'être abîmé par des caractères de remplacement.
+    """
+    data = path.read_bytes()
+    if b"\0" in data[:8192]:
+        raise ValueError("fichier binaire")
+    encoding = "utf-8-sig" if data.startswith(codecs.BOM_UTF8) else "utf-8"
+    try:
+        text = data.decode(encoding)
+    except UnicodeDecodeError:
+        encoding = "latin-1"
+        text = data.decode(encoding)
+    newline = "\r\n" if "\r\n" in text else "\n"
+    return text.replace("\r\n", "\n"), encoding, newline
 
 
 # --- coloration syntaxique ---------------------------------------------------
@@ -144,9 +166,6 @@ class Highlighter(QSyntaxHighlighter):
                 self.setFormat(0, len(text), self.c["string"])
             self.setCurrentBlockState(int(inside != fence))
 
-
-# --- zone d'édition ----------------------------------------------------------
-
     def _docstrings(self, text: str) -> None:
         """Chaînes triples sur plusieurs lignes (état de bloc 2 = à l'intérieur)."""
         fmt, pos = self.c["string"], 0
@@ -168,6 +187,8 @@ class Highlighter(QSyntaxHighlighter):
             self.setFormat(start, end + 3 - start, fmt)
             pos = end + 3
 
+
+# --- zone d'édition ----------------------------------------------------------
 
 class LineNumbers(QWidget):
     def __init__(self, editor: "CodeEditor") -> None:
@@ -204,7 +225,9 @@ class CodeEditor(QPlainTextEdit):
         self.setTabStopDistance(self.fontMetrics().horizontalAdvance(" ") * len(self.indent))
         if self.highlighter is not None:
             self.highlighter.setDocument(None)
-        self.highlighter = Highlighter(self.document(), language)
+            self.highlighter = None
+        if language != "text" and self.document().characterCount() <= HIGHLIGHT_MAX:
+            self.highlighter = Highlighter(self.document(), language)
 
     def theme_changed(self) -> None:
         self._highlight_line()
@@ -339,6 +362,10 @@ class FindBar(QWidget):
         rep_btn = QPushButton("Remplacer")
         all_btn = QPushButton("Tout remplacer")
         close = QToolButton(text="✕", toolTip="Fermer (Échap)")
+        for w, name in ((self.find, "Rechercher"), (self.replace, "Remplacer par"), (self.case, "Respecter la casse"),
+                        (prev_btn, "Occurrence précédente"), (next_btn, "Occurrence suivante"),
+                        (close, "Fermer la recherche")):
+            w.setAccessibleName(name)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(theme.GUTTER, 0, theme.GUTTER, theme.SPACE)
         lay.setSpacing(theme.SPACE)
@@ -449,6 +476,8 @@ class TabBar(QTabBar):
     def tabInserted(self, index: int) -> None:  # noqa: N802
         super().tabInserted(index)
         button = QToolButton(objectName="tabclose", toolTip="Fermer (Ctrl+W)", cursor=Qt.CursorShape.PointingHandCursor)
+        button.setAccessibleName("Fermer l'onglet")
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)   # Ctrl+W au clavier
         button.setFixedSize(self.ICON, self.ICON)
         holder = QWidget()
         lay = QHBoxLayout(holder)
@@ -471,6 +500,7 @@ class FileTab(QWidget):
         self.path = path
         self.editor: CodeEditor | None = None
         self.saved_text = ""
+        self.encoding, self.newline = "utf-8", "\n"   # ceux du fichier d'origine, repris à l'enregistrement
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         screen = theme.NeuCard("screen", radius=20, padding=16)
@@ -483,8 +513,12 @@ class FileTab(QWidget):
             area.setWidget(label)
             screen.add(area, 1)
             return
-        self.editor = CodeEditor(language_of(path) if path else "text")
-        self.editor.setPlainText(self.read() if path else "")
+        text = ""
+        if path is not None:
+            text, self.encoding, self.newline = read_text(path)
+        self.editor = CodeEditor("text")
+        self.editor.setPlainText(text)
+        self.editor.set_language(language_of(path) if path else "text")   # coloration selon la taille du texte
         self.saved_text = self.editor.toPlainText()
         self.editor.document().setModified(False)
         screen.add(self.editor, 1)
@@ -499,27 +533,37 @@ class FileTab(QWidget):
         return self.path is None and self.editor is not None and not self.modified and not self.editor.toPlainText()
 
     def read(self) -> str:
-        data = self.path.read_bytes()
-        if b"\0" in data[:8192]:
-            raise ValueError("fichier binaire")
-        return data.decode("utf-8", errors="replace")
+        return read_text(self.path)[0]
 
     @property
     def modified(self) -> bool:
         return bool(self.editor and self.editor.document().isModified())
 
+    @property
+    def format_label(self) -> str:
+        """Encodage et fin de ligne, quand ils diffèrent de l'usuel UTF-8 / LF."""
+        parts = [self.encoding.upper()] if self.encoding != "utf-8" else []
+        return " · ".join(parts + (["CRLF"] if self.newline == "\r\n" else []))
+
     def save(self) -> None:
+        """Enregistre atomiquement, dans l'encodage et avec les fins de ligne d'origine."""
         if self.editor is None or self.path is None:
             return
         text = self.editor.toPlainText()
-        self.path.write_text(text, encoding="utf-8")
+        out = text.replace("\n", self.newline) if self.newline != "\n" else text
+        try:
+            data = out.encode(self.encoding)
+        except UnicodeEncodeError:   # caractère absent de l'encodage d'origine : passage en UTF-8
+            self.encoding = "utf-8"
+            data = out.encode(self.encoding)
+        write_atomic(self.path, data)
         self.saved_text = text
         self.editor.document().setModified(False)
 
     def reload(self) -> None:
         if self.editor is None or self.path is None:
             return
-        text = self.read()
+        text, self.encoding, self.newline = read_text(self.path)
         if text == self.editor.toPlainText():
             self.editor.document().setModified(False)
             return
@@ -556,6 +600,8 @@ class EditorTabs(QWidget):
         self.tabs.currentChanged.connect(lambda _: self.current_changed.emit())
         self.watcher = QFileSystemWatcher(self)
         self.watcher.fileChanged.connect(self._external_change)
+        self._changes: set[str] = set()   # changements notifiés, en attente de traitement
+        self._asking: set[Path] = set()   # question « recharger ? » déjà affichée pour ces fichiers
         self.default_dir: Callable[[], Path] = Path.cwd   # dossier proposé par « Enregistrer sous »
 
     # accès
@@ -689,11 +735,16 @@ class EditorTabs(QWidget):
         name, _ = QFileDialog.getSaveFileName(self, "Enregistrer sous", str(start))
         if not name:
             return False
-        if tab.path is not None:
-            self.watcher.removePath(str(tab.path))
+        old = tab.path
+        if old is not None:
+            self.watcher.removePath(str(old))
         tab.path = Path(name).resolve()
         tab.editor.set_language(language_of(tab.path))
-        if not self.save(tab):
+        if not self.save(tab):   # échec : l'onglet reste attaché à son fichier d'origine
+            tab.path = old
+            tab.editor.set_language(language_of(old) if old else "text")
+            if old is not None:
+                self.watcher.addPath(str(old))
             return False
         self.watcher.addPath(str(tab.path))
         return True
@@ -706,17 +757,22 @@ class EditorTabs(QWidget):
     # fichiers modifiés hors de l'éditeur (paramètres, Seldon, Claude Code…)
     def _external_change(self, path: str) -> None:
         # un enregistrement atomique remplace le fichier : on le resurveille un peu plus tard ;
-        # nos propres enregistrements sont ignorés car le disque correspond déjà au texte
+        # nos propres enregistrements sont ignorés car le disque correspond déjà au texte.
+        # Une rafale de notifications pour un même fichier n'est traitée qu'une fois.
+        if path in self._changes:
+            return
+        self._changes.add(path)
         QTimer.singleShot(150, lambda: self._handle_change(path))
 
     def _handle_change(self, path: str) -> None:
+        self._changes.discard(path)
         if Path(path).exists() and path not in self.watcher.files():
             self.watcher.addPath(path)
         self.reload_path(Path(path))
 
     def reload_path(self, path: Path) -> None:
         tab = self.find_tab(path)
-        if tab is None or tab.editor is None:
+        if tab is None or tab.editor is None or tab.path in self._asking:
             return
         if not tab.path.exists():
             tab.editor.document().setModified(True)   # supprimé : garder le texte comme non enregistré
@@ -727,15 +783,23 @@ class EditorTabs(QWidget):
             return
         if on_disk == tab.editor.toPlainText():
             return
-        if tab.modified:
-            answer = QMessageBox.question(
-                self, "Fichier modifié sur le disque",
-                f"{tab.path.name} a changé sur le disque mais a aussi des modifications non enregistrées.\n"
-                "Recharger et perdre vos modifications ?",
-            )
+        if tab.modified:   # jamais d'écrasement silencieux des modifications en cours
+            self._asking.add(tab.path)
+            try:
+                answer = QMessageBox.question(
+                    self, "Fichier modifié sur le disque",
+                    f"{tab.path.name} a changé sur le disque mais a aussi des modifications non enregistrées.\n\n"
+                    "Recharger et perdre vos modifications ?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No,
+                )
+            finally:
+                self._asking.discard(tab.path)
             if answer != QMessageBox.StandardButton.Yes:
                 return
-        tab.reload()
+        try:
+            tab.reload()
+        except (OSError, ValueError):
+            return
         self._refresh_title(tab)
 
     def path_moved(self, old: Path, new: Path) -> None:
