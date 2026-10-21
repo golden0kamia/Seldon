@@ -16,7 +16,8 @@ from seldon.gui.files import FileBrowser
 from seldon.gui.runner import RunnerPanel
 from seldon.gui.settings import SettingsPanel
 
-THEMES = [("auto", "Automatique (système)"), ("light", "Clair"), ("dark", "Sombre")]
+THEMES = [("auto", "Automatique (système)"), ("light", "Clair"), ("dark", "Sombre"),
+          ("retro", "Rétro-futurisme (néon)"), ("cyber", "Cyberpunk (terminal)"), ("hud", "HUD de science-fiction")]
 SETTINGS_PAGE, EDITOR_PAGE, LOGS_PAGE = 0, 1, 2
 
 
@@ -158,6 +159,7 @@ class MainWindow(QMainWindow):
             self.theme_actions[key] = a
         view.addAction(act("Basculer clair / sombre", self.toggle_theme, "Ctrl+Shift+L"))
         self.masthead.toggle_variant.connect(self.toggle_theme)
+        self.masthead.variant_btn.setMenu(themes)
         hints = QGuiApplication.styleHints()
         if hasattr(hints, "colorSchemeChanged"):
             hints.colorSchemeChanged.connect(lambda _s: self.theme_mode == "auto" and self.set_theme("auto"))
@@ -204,7 +206,7 @@ class MainWindow(QMainWindow):
 
     # --- thème ----------------------------------------------------------------
     def set_theme(self, mode: str) -> None:
-        """``auto`` suit le système ; ``light`` / ``dark`` forcent la variante."""
+        """``auto`` suit le système ; les autres clés de ``THEMES`` forcent la variante."""
         self.theme_mode = mode if mode in dict(THEMES) else "auto"
         self.theme_actions[self.theme_mode].setChecked(True)
         app = QApplication.instance()
@@ -213,7 +215,7 @@ class MainWindow(QMainWindow):
         self.store.setValue("theme", self.theme_mode)
 
     def toggle_theme(self) -> None:
-        self.set_theme("light" if theme.VARIANT == "dark" else "dark")
+        self.set_theme("light" if theme.is_dark() else "dark")
 
     def _toggle_comment(self) -> None:
         tab = self.editors.current()

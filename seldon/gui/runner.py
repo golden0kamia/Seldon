@@ -132,9 +132,7 @@ class RunnerPanel(QWidget):
         self.log.setFrameShape(QFrame.Shape.NoFrame)
         self.log.setPlaceholderText("Seldon est arrêté.\n\n▶ Lancer (F5) : mode vocal complet\n"
                                     "▶ Mode texte (Ctrl+F5) : clavier et console\n\nSes messages s'afficheront ici.")
-        pal = self.log.palette()
-        pal.setColor(QPalette.ColorRole.PlaceholderText, QColor(theme.CRT_DIM))   # lisible sur l'écran
-        self.log.setPalette(pal)
+        self.theme_changed()
         self.input = QLineEdit()
         self.input.setAccessibleName("Message à Seldon")
         self.input.returnPressed.connect(self.send)
@@ -417,6 +415,11 @@ class RunnerPanel(QWidget):
         self.log.viewport().update()
         bar = self.log.verticalScrollBar()
         bar.setValue(bar.maximum())
+
+    def theme_changed(self) -> None:
+        pal = self.log.palette()
+        pal.setColor(QPalette.ColorRole.PlaceholderText, QColor(theme.CRT_DIM))   # lisible sur l'écran
+        self.log.setPalette(pal)
 
     def clear(self) -> None:
         self._buffer.clear()

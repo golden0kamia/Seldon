@@ -134,6 +134,37 @@ def test_theme_variants_switch_and_persist(window, qapp):
     assert theme.DARK["BG"] not in theme.stylesheet()
 
 
+def test_retro_theme_from_menu_and_back(window, qapp):
+    from seldon.gui import theme
+
+    window.masthead.variant_btn.menu().actions()[3].trigger()    # flèche du bandeau : choix du thème
+    assert theme.VARIANT == "retro" and window.store.value("theme") == "retro"
+    css = qapp.styleSheet()
+    assert theme.RETRO["NEON"] in css and "backdrop.svg" in css
+    assert window.masthead.name.graphicsEffect() is not None   # halo néon sur la marque
+    screens = [c for c in window.findChildren(theme.NeuCard) if c.kind == "screen"]
+    assert screens and all(not c.scanlines.isHidden() for c in screens)
+    window.toggle_theme()                                         # rétro est sombre : on passe au clair
+    assert theme.VARIANT == "light" and "backdrop.svg" not in qapp.styleSheet()
+    assert window.masthead.name.graphicsEffect() is None and all(c.scanlines.isHidden() for c in screens)
+
+
+@pytest.mark.parametrize("variant", ["cyber", "hud"])
+def test_neon_variants(window, qapp, variant):
+    from seldon.gui import theme
+
+    window.set_theme(variant)
+    assert theme.VARIANT == variant and theme.is_neon() and theme.is_dark()
+    css = qapp.styleSheet()
+    assert theme.PALETTES[variant]["BG"] in css and "background-repeat: repeat-xy" in css
+    screens = [c for c in window.findChildren(theme.NeuCard) if c.kind == "screen"]
+    assert all(c.scanlines.isHidden() != theme.SCANLINES for c in screens)
+    for card in window.findChildren(theme.NeuCard):
+        card.resize(200, 120)
+        assert not card._render().isNull()
+    window.set_theme("light")
+
+
 def test_editor_page_always_has_a_document(window):
     from seldon.gui.window import EDITOR_PAGE, SETTINGS_PAGE
 

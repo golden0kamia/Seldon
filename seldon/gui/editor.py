@@ -230,6 +230,8 @@ class CodeEditor(QPlainTextEdit):
             self.highlighter = Highlighter(self.document(), language)
 
     def theme_changed(self) -> None:
+        if self.highlighter is not None:   # couleurs de syntaxe propres à la variante
+            self.set_language(self.language)
         self._highlight_line()
         self.gutter.update()
 
