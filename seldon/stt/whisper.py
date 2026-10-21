@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import queue
 import re
 import threading
@@ -31,6 +32,8 @@ from typing import Any, AsyncIterator, Callable
 
 import numpy as np
 
+from seldon.core.errors import log_error
+from seldon.core import tags
 from seldon.core.registry import register
 from seldon.core.types import Utterance
 from seldon.stt.base import STTEngine
@@ -47,7 +50,7 @@ DEFAULT_IGNORE = [
     "merci d'avoir regardé cette vidéo",
 ]
 
-MIC_TAG = "[micro]"   # repéré par la page Journal de l'interface (seldon/gui/runner.py)
+MIC_TAG = tags.tag(tags.MIC, "")   # forme sans jeton ; voir seldon.core.tags
 
 DEFAULT_INTERRUPT = ["stop", "arrête", "arrêtez", "attends", "attendez", "tais-toi", "chut", "silence", "stoppe"]
 
@@ -189,6 +192,7 @@ class WhisperSTT(STTEngine):
         language: str | None = "fr",       # None = détection automatique
         device: str = "cpu",               # "cpu", "cuda" ou "auto"
         compute_type: str = "int8",        # "int8" (CPU), "float16" (GPU), ...
+        cpu_threads: int | None = None,    # threads CPU de Whisper ; None = auto (moitié des cœurs logiques, 4 à 8)
         beam_size: int = 5,
         initial_prompt: str | None = None,
         input_device: int | str | None = None,   # micro sounddevice (index ou nom)
@@ -210,6 +214,9 @@ class WhisperSTT(STTEngine):
         self.language = language
         self.device = device
         self.compute_type = compute_type
+        # faster-whisper prend 4 threads par défaut ; ~8 est le plus rapide sur un CPU de bureau
+        # (au-delà, les cœurs logiques n'aident plus).
+        self.cpu_threads = cpu_threads if cpu_threads is not None else max(4, min(8, (os.cpu_count() or 8) // 2))
         self.beam_size = beam_size
         self.initial_prompt = initial_prompt
         self.input_device = input_device
@@ -232,6 +239,7 @@ class WhisperSTT(STTEngine):
         self._segments: asyncio.Queue[np.ndarray | Utterance | None] | None = None
         self._barge: asyncio.Queue[np.ndarray] | None = None   # segments entendus pendant que Seldon parle
         self._paused = threading.Event()
+        self._pauses = 0   # pauses en cours (ex. accusé de réception + annonce de fond) : reprise à 0
         self._muted = threading.Event()
         self._stopping = threading.Event()
         self._epoch = 0   # incrémenté à chaque pause : le thread VAD jette le segment en cours
@@ -253,7 +261,8 @@ class WhisperSTT(STTEngine):
     def _load(self) -> tuple[Any, Any]:
         from faster_whisper import WhisperModel
 
-        model = WhisperModel(self.model_name, device=self.device, compute_type=self.compute_type)
+        model = WhisperModel(self.model_name, device=self.device, compute_type=self.compute_type,
+                             cpu_threads=self.cpu_threads)
         vad = SileroVAD() if self.vad_kind == "silero" else EnergyVAD(self.energy_threshold_db)
         return model, vad
 
@@ -287,10 +296,14 @@ class WhisperSTT(STTEngine):
             self._segments.put_nowait(None)
 
     def pause(self) -> None:
+        self._pauses += 1
         self._paused.set()
         self._epoch += 1
 
     def resume(self) -> None:
+        self._pauses = max(0, self._pauses - 1)
+        if self._pauses:   # Seldon parle encore (deux prises de parole se chevauchent)
+            return
         # Vide ce qui a pu être capturé juste avant la pause.
         self._epoch += 1
         with self._frames.mutex:
@@ -307,12 +320,13 @@ class WhisperSTT(STTEngine):
                 self._frames.queue.clear()
             self._muted.clear()
         self._epoch += 1   # le thread VAD jette le segment en cours
-        log.info("%s %s", MIC_TAG, "coupé" if on else "rétabli")
+        log.info("%s %s", tags.tag(tags.MIC), "coupé" if on else "rétabli")
 
     # -- thread VAD -----------------------------------------------------------
 
     def _vad_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         epoch, pending = self._epoch, np.zeros(0, dtype=np.float32)
+        failing = False   # une erreur n'est journalisée qu'une fois, jusqu'au retour à la normale
         while not self._stopping.is_set():
             try:
                 block = self._frames.get(timeout=0.1)
@@ -326,19 +340,35 @@ class WhisperSTT(STTEngine):
                 self.vad.reset()
             if paused and not (self.barge_in and self._barge is not None):
                 continue
-            pending = np.concatenate([pending, block])
-            while len(pending) >= FRAME:
-                frame, pending = pending[:FRAME], pending[FRAME:]
-                prob = self.vad(frame)
-                if not paused:
-                    segment = self.segmenter.push(frame, prob)
+            pending = np.concatenate([pending, block]) if len(pending) else block
+            try:
+                while len(pending) >= FRAME:
+                    frame, pending = pending[:FRAME], pending[FRAME:]
+                    prob = self.vad(frame)
+                    if not paused:
+                        segment = self.segmenter.push(frame, prob)
+                        if segment is not None:
+                            loop.call_soon_threadsafe(self._segments.put_nowait, segment)
+                        continue
+                    # Seldon parle : seuls les sons plus forts que son écho comptent.
+                    segment = self.barge_segmenter.push(frame, prob if _level_db(frame) >= self.barge_in_db else 0.0)
                     if segment is not None:
-                        loop.call_soon_threadsafe(self._segments.put_nowait, segment)
-                    continue
-                # Seldon parle : seuls les sons plus forts que son écho comptent.
-                segment = self.barge_segmenter.push(frame, prob if _level_db(frame) >= self.barge_in_db else 0.0)
-                if segment is not None:
-                    loop.call_soon_threadsafe(self._barge.put_nowait, segment)
+                        loop.call_soon_threadsafe(self._barge.put_nowait, segment)
+                failing = False
+            except RuntimeError as e:
+                if loop.is_closed():   # arrêt de Seldon
+                    return
+                failing = self._vad_error(e, failing)
+            except Exception as e:   # sans cela, le thread mourrait et Seldon deviendrait sourd
+                failing = self._vad_error(e, failing)
+
+    def _vad_error(self, exc: Exception, failing: bool) -> bool:
+        if not failing:
+            log_error(log, "Détection de la parole (VAD) en échec", exc)
+        self.segmenter.reset()
+        self.barge_segmenter.reset()
+        self.vad.reset()
+        return True
 
     # -- transcription --------------------------------------------------------
 
@@ -375,7 +405,11 @@ class WhisperSTT(STTEngine):
                 continue
             if self._paused.is_set() or self._muted.is_set():
                 continue
-            text, language = await asyncio.to_thread(self.transcribe, audio)
+            try:
+                text, language = await asyncio.to_thread(self.transcribe, audio)
+            except Exception as e:   # une phrase perdue, pas l'écoute
+                log_error(log, "Transcription échouée", e)
+                continue
             accepted = self.accept(text)
             if accepted is None:
                 log.debug("Segment ignoré (%.1f s)", len(audio) / SAMPLE_RATE)
@@ -390,7 +424,11 @@ class WhisperSTT(STTEngine):
             self._barge.get_nowait()
         while True:
             audio = await self._barge.get()
-            text, language = await asyncio.to_thread(self.transcribe, audio)
+            try:
+                text, language = await asyncio.to_thread(self.transcribe, audio)
+            except Exception as e:
+                log_error(log, "Transcription d'une interruption échouée", e)
+                continue
             if not (accepted := self.accept(text)):
                 continue
             # un mot que Seldon prononce lui-même est probablement son écho

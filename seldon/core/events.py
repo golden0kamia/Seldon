@@ -2,10 +2,16 @@
 
 Événements émis par le pipeline :
     utterance        (utterance: Utterance)
-    action.start     (name: str, params: dict)
+    overheard        (utterance: Utterance)       phrase entendue sans mot d'éveil, non traitée
+    command          (name: str, args: str)
+    acknowledge      (text: str)
+    action.start     (name: str, params: dict)    params peut contenir des données sensibles
     action.end       (name: str, result: ActionResult)
     response         (text: str)
-    error            (error: Exception, stage: str)
+    error            (error: Exception, stage: str)   stage : brain, speakers, memory, pipeline
+
+Les handlers sont appelés l'un après l'autre et attendus : un handler lent retarde le
+pipeline ; une exception est journalisée sans interrompre les suivants.
 """
 
 from __future__ import annotations

@@ -114,9 +114,14 @@ class PiperTTS(TTSEngine):
         await self.start()
         async with self._lock:
             self._stop.clear()
-            await asyncio.to_thread(self._speak_blocking, text)
+            try:
+                await asyncio.to_thread(self._speak_blocking, text)
+            except asyncio.CancelledError:
+                # Le thread continuerait à parler (et chevaucherait la phrase suivante) : on le coupe.
+                self._interrupt()
+                raise
 
-    async def stop(self) -> None:
+    def _interrupt(self) -> None:
         self._stop.set()
         try:
             import sounddevice as sd
@@ -124,3 +129,6 @@ class PiperTTS(TTSEngine):
             sd.stop()
         except Exception:  # PortAudio absent : rien à interrompre
             pass
+
+    async def stop(self) -> None:
+        self._interrupt()

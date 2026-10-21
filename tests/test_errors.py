@@ -30,6 +30,9 @@ def test_yaml_syntax_error_gives_line():
     ("confirm: peut-être", "console, always, never"),
     ("log_level: bavard", "DEBUG"),
     ("follow_up_s: longtemps", "follow_up_s"),
+    ("follow_up_s: -5", "follow_up_s"),
+    ("commands: 'false'", "true ou false"),
+    ("acknowledge: non", "true ou false"),
 ])
 def test_invalid_config(text, match):
     with pytest.raises(SeldonError, match=match):
@@ -85,6 +88,39 @@ async def test_start_failure_names_the_stage():
     with pytest.raises(SeldonError, match="cerveau") as e:
         await a.run()
     assert "llama serve" in str(e.value)
+
+
+def test_unknown_top_level_key_is_reported(caplog):
+    caplog.set_level(logging.WARNING)
+    Config.parse("stt: text\nfolow_up_s: 5\n")
+    assert "folow_up_s" in caplog.text and "follow_up_s" in caplog.text
+
+
+@pytest.mark.parametrize("options, match", [
+    ({"silence_ms": "700ms"}, "un nombre attendu"),
+    ({"barge_in": "non"}, "true ou false"),
+    ({"beam_size": True}, "un nombre attendu"),
+])
+def test_option_types_are_checked(options, match):
+    with pytest.raises(SeldonError, match=match):
+        registry.create("stt", "whisper", **options)
+
+
+def test_option_types_accept_valid_values():
+    registry.check_options(registry.resolve("brain", "llamacpp"), "brain", "llamacpp",
+                           {"temperature": None, "thinking": None, "max_tokens": 512, "timeout_s": 30})
+    registry.check_options(registry.resolve("brain", "ollama"), "brain", "ollama", {"keep_alive": -1})
+
+
+@pytest.mark.parametrize("text, secret", [
+    ("Client error '401' for url 'https://api.example.com/v1/x?key=AIzaSyA1234567&lang=fr'", "AIzaSyA1234567"),
+    ("headers: {'authorization': 'Bearer abcdefghijklmnop'}", "abcdefghijklmnop"),
+    ("invalid x-api-key: sk-ant-api03-AbCdEfGhIjKlMnOp", "AbCdEfGhIjKlMnOp"),
+    ("connexion à http://bastien:hunter2@nas.local/api refusée", "hunter2"),
+])
+def test_secrets_are_redacted(text, secret):
+    assert secret not in describe(RuntimeError(text))
+    assert secret not in describe(SeldonError(text))
 
 
 def test_main_prints_message_without_traceback(tmp_path, caplog, monkeypatch):

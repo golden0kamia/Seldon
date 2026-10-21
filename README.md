@@ -30,6 +30,22 @@ commande en échec, service indisponible, ou action échouée dont le cerveau
 n'a pas parlé (« Désolé, l'action terminal a échoué. »). Le détail reste
 dans le journal.
 
+Seldon commence à parler avant que le modèle ait fini d'écrire : avec le
+cerveau `llamacpp`, la réponse est lue en flux (`stream: true`) et chaque phrase
+est dite dès qu'elle est complète ; une coupure de parole arrête aussi la
+génération. Au démarrage, une requête de préchauffage fait calculer au serveur
+le prompt système et la liste des outils (la première réponse n'attend pas).
+L'historique envoyé au modèle reste borné (`max_history_chars`,
+`max_history_messages`) : les anciens résultats d'outils sont d'abord abrégés,
+puis les échanges les plus anciens retirés, et seule la dernière photo de la
+caméra est gardée (`keep_images`).
+
+Ce que disent les gens, ce que renvoient les outils (sortie d'une commande,
+fichier lu, réponse de Claude Code) : pour le cerveau, ce sont des données,
+jamais des ordres. Les crochets d'une phrase dite ou tapée sont remplacés par
+des parenthèses, si bien que personne ne peut imiter les lignes
+`[locuteur : …]` ou `[note : …]` que Seldon ajoute lui-même.
+
 ## Installation
 
 ```bash
@@ -42,6 +58,9 @@ python3 -m venv .venv
 Le cerveau par défaut (`llamacpp`) se connecte à un serveur `llama serve`
 déjà lancé (`http://127.0.0.1:9931/v1`, API compatible OpenAI, avec appels
 d'outils). Le modèle chargé sur le serveur est utilisé automatiquement.
+`./llama-serve.sh` le lance avec les réglages de Seldon : il n'écoute que la
+machine elle-même et refuse les pages web d'autres origines (`--cors-origins
+localhost`) ; les options ajoutées sont transmises (`./llama-serve.sh -c 16384`).
 Pour une voix réactive, privilégier un modèle qui tient entièrement en VRAM
 et laisser `thinking: false`.
 
@@ -50,7 +69,7 @@ Paquets système : `libportaudio2` (micro/haut-parleur), `espeak-ng` (seulement 
 ## Utilisation
 
 ```bash
-python -m seldon                    # mode vocal complet (config.yaml)
+python -m seldon                    # mode vocal complet (config.yaml) ; Ctrl+C ou SIGTERM : arrêt propre
 python -m seldon --text             # clavier + console ; "Bastien: bonjour" simule un locuteur
 python -m seldon.tools.enroll Bastien   # enregistre une empreinte vocale
 pytest                              # tests (sans micro, caméra ni modèle)
@@ -60,6 +79,10 @@ Commandes locales (traitées sans passer par le modèle, au clavier ou à la voi
 `exit` / `quitter`, `nouvelle` / `oublie tout`, `conversations [mots-clés]`,
 `reprendre N|mots-clés`, `supprimer N`, `actions`, `aide`. Le « / » initial
 est facultatif (obligatoire pour passer des arguments).
+
+La configuration est vérifiée au lancement : une option qui attend un nombre
+ou `true` / `false` refuse `"700ms"` ou `"non"`, et une clé mal orthographiée
+est signalée avec la clé probable.
 
 ### Interface graphique (Qt 6)
 

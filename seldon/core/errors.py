@@ -9,6 +9,7 @@ lisible ; la trace complète n'est affichée qu'avec ``log_level: DEBUG``.
 from __future__ import annotations
 
 import logging
+import re
 
 # module Python manquant -> extra à installer (pyproject.toml)
 EXTRAS = {
@@ -30,6 +31,23 @@ EXTRAS = {
 }
 
 DEBUG_HINT = "relancer avec « log_level: DEBUG » dans config.yaml pour la trace complète"
+
+# Secrets qu'un message d'exception peut contenir (URL, en-têtes, corps de réponse) : masqués.
+_SECRETS = [
+    (re.compile(r"\b(sk-(?:[a-z]+\d*-)?)[A-Za-z0-9_-]{8,}"), r"\1***"),   # clés API (sk-ant-api03-…, sk-…)
+    (re.compile(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 ***"),
+    (re.compile(r"(?i)\b((?:x-)?api[_-]?key|access[_-]?token|token|secret|password|passwd|authorization)"
+                r"(\"?'?\s*[:=]\s*\"?'?)(?!\*\*\*|bearer\b|basic\b)[^\s\"'&,;}]+"), r"\1\2***"),
+    (re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@"), r"\1***@"),   # identifiants dans une URL
+    (re.compile(r"(?i)([?&](?:key|sig|signature)=)[^&\s'\"]+"), r"\1***"),
+]
+
+
+def redact(text: str) -> str:
+    """Masque les clés, jetons et mots de passe présents dans ``text``."""
+    for pattern, replacement in _SECRETS:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 class SeldonError(RuntimeError):
@@ -81,9 +99,9 @@ def kind(exc: BaseException) -> str:
 def describe(exc: BaseException) -> str:
     """Message lisible pour une exception quelconque (sans trace)."""
     if isinstance(exc, SeldonError):
-        return str(exc)
+        return redact(str(exc))
     k = kind(exc)
-    detail = str(exc).strip()
+    detail = redact(str(exc).strip())
     if k == "missing" and isinstance(exc, ImportError) and exc.name:
         return f"module Python « {exc.name} » non installé\n  → {install_hint(exc.name)}"
     if k == "timeout":

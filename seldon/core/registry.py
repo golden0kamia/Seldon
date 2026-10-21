@@ -117,6 +117,35 @@ def check_options(cls: type, category: str, name: str, options: dict[str, Any]) 
                if p.default is p.empty and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY) and n not in options]
     if missing:
         raise SeldonError(f"Option obligatoire manquante pour {category} « {name} » : {', '.join(missing)}")
+    for option, value in options.items():
+        expected = _expected(params[option])
+        if expected is None or (value is None and expected[1]):
+            continue
+        kind, _ = expected
+        ok = isinstance(value, bool) if kind == "bool" else isinstance(value, (int, float)) and not isinstance(value, bool)
+        if not ok:
+            raise SeldonError(
+                f"Option « {option} » de {category} « {name} » : "
+                f"{'true ou false' if kind == 'bool' else 'un nombre'} attendu, pas {value!r}",
+                "sans guillemets dans config.yaml (ex. 700, 0.5, true)",
+            )
+
+
+def _expected(param: inspect.Parameter) -> tuple[str, bool] | None:
+    """(« bool » ou « number », None accepté ?) attendu pour un paramètre, d'après sa valeur par
+    défaut et son annotation ; None si le type n'est pas simple (chaîne, liste, union mixte…)."""
+    ann = param.annotation
+    ann = "" if ann is param.empty else ann if isinstance(ann, str) else getattr(ann, "__name__", str(ann))
+    types = {t.strip() for t in ann.split("|")} - {""}
+    nullable = "None" in types or param.default is None
+    types.discard("None")
+    default = param.default
+    if types == {"bool"} or (not types and isinstance(default, bool)):
+        return "bool", nullable
+    if (types and types <= {"int", "float"}) or (not types and isinstance(default, (int, float))
+                                                 and not isinstance(default, bool)):
+        return "number", nullable
+    return None
 
 
 def create(category: str, name: str, **options: Any) -> Any:

@@ -28,14 +28,16 @@ from typing import Any
 
 from seldon.actions.base import Action
 from seldon.brain.base import Brain
+from seldon.brain.prompts import neutralize
 from seldon.config import Config
-from seldon.core import commands, registry
+from seldon.core import commands, registry, tags
 from seldon.core.errors import SeldonError, describe, log_error, spoken
 from seldon.core.events import EventBus
 from seldon.core.memory import ConversationMemory
 from seldon.core.types import ActionContext, ActionResult, ConfirmFn, Utterance
 from seldon.speakers.base import SpeakerIdentifier
 from seldon.stt.base import STTEngine
+from seldon.stt.text import read_line
 from seldon.tts.base import TTSEngine
 
 log = logging.getLogger(__name__)
@@ -46,15 +48,18 @@ OVERHEARD_MAX = 6
 
 # signal -> micro coupé ? (POSIX seulement)
 MUTE_SIGNALS = {signal.SIGUSR1: True, signal.SIGUSR2: False} if hasattr(signal, "SIGUSR1") else {}
+# SIGTERM (kill, systemd) : arrêt propre, comme Ctrl+C (conversation sauvegardée).
+STOP_SIGNALS = [signal.SIGTERM] if hasattr(signal, "SIGTERM") else []
 
-CONFIRM_TAG = "[confirmation]"   # repéré par la page Journal de l'interface (seldon/gui/runner.py)
+CONFIRM_TAG = tags.tag(tags.CONFIRM, "")   # forme sans jeton ; voir seldon.core.tags
 
 
 async def console_confirm(question: str) -> bool:
-    # Question sur une ligne complète : un lecteur ligne à ligne (l'interface) la voit aussitôt.
-    print(f"\n{CONFIRM_TAG} {question} [o/N]", flush=True)
+    # Question sur une ligne complète : un lecteur ligne à ligne (l'interface) la voit aussitôt ; avec
+    # le jeton de l'interface, une sortie qui imite la balise ne déclenche pas de fausse question.
+    print(f"\n{tags.tag(tags.CONFIRM)} {question} [o/N]", flush=True)
     try:
-        answer = await asyncio.to_thread(input)
+        answer = await read_line()   # thread démon : une question sans réponse ne bloque pas l'arrêt
     except EOFError:   # pas d'entrée standard : refus
         return False
     return answer.strip().lower() in {"o", "oui", "y", "yes"}
@@ -99,6 +104,8 @@ class Assistant:
         self.events = events or EventBus()
         self.enable_commands = enable_commands
         self._stop_requested = False
+        self._terminating = False
+        self._task: asyncio.Task | None = None   # tâche de run(), annulée par SIGTERM
         self.memory = memory
         self.follow_up_s = follow_up_s
         self.acknowledge = acknowledge
@@ -108,6 +115,7 @@ class Assistant:
         # Services accessibles aux actions via ctx.services ; on peut en ajouter.
         self.services: dict[str, Any] = {
             "tts": tts, "stt": stt, "speakers": speakers, "events": self.events, "memory": memory,
+            "busy": self._busy,   # verrou d'un échange : une annonce en arrière-plan attend la fin du tour
         }
 
     @classmethod
@@ -122,12 +130,16 @@ class Assistant:
 
         brain = build("brain", cfg.brain)
         memory_opts = dict(cfg.memory)
+        enabled = memory_opts.pop("enabled", True)
+        if not isinstance(enabled, bool):
+            raise SeldonError(f"Section « memory » : enabled doit valoir true ou false, pas {enabled!r}")
         try:
-            memory = (
-                ConversationMemory(brain, cfg.brain.engine, **memory_opts)
-                if memory_opts.pop("enabled", True) else None
-            )
-        except TypeError as e:
+            memory = None
+            if enabled:
+                registry.check_options(ConversationMemory, "la section", "memory",
+                                       {"brain": brain, "brain_kind": cfg.brain.engine, **memory_opts})
+                memory = ConversationMemory(brain, cfg.brain.engine, **memory_opts)
+        except (TypeError, ValueError) as e:
             raise SeldonError(f"Section « memory » invalide : {e}") from e
         return cls(
             stt=build("stt", cfg.stt),
@@ -185,15 +197,56 @@ class Assistant:
                 log_error(log, "Compression des conversations échouée", e)
             await asyncio.sleep(self.memory.compress_every_s)
 
+    async def _warm_up(self) -> None:
+        """Prépare le cerveau en arrière-plan (cache du prompt) : la première phrase est plus rapide."""
+        started = time.perf_counter()
+        try:
+            await self.brain.warmup(list(self.actions.values()))
+        except Exception as e:
+            log.debug("Préparation du cerveau impossible : %s", describe(e))
+        else:
+            log.debug("Cerveau prêt en %.1f s", time.perf_counter() - started)
+
+    def _terminate(self) -> None:
+        """SIGTERM : arrêt propre (comme Ctrl+C), une seule fois."""
+        if self._terminating or self._task is None:
+            return
+        log.info("Arrêt demandé (SIGTERM)")
+        self._terminating = self._stop_requested = True
+        self._task.cancel()
+
+    def _add_signal_handlers(self, loop: asyncio.AbstractEventLoop) -> dict[int, Any]:
+        """Installe les gestionnaires ; renvoie les précédents (rétablis par ``_remove_signal_handlers``)."""
+        handlers = {**{sig: (self.stt.mute, on) for sig, on in MUTE_SIGNALS.items()},
+                    **{sig: (self._terminate,) for sig in STOP_SIGNALS}}
+        previous: dict[int, Any] = {}
+        for sig, (callback, *args) in handlers.items():
+            try:
+                before = signal.getsignal(sig)
+                loop.add_signal_handler(sig, callback, *args)
+            except (ValueError, RuntimeError, NotImplementedError) as e:   # hors du thread principal…
+                log.debug("Signal %s non géré : %s", sig, e)
+                continue
+            previous[sig] = before
+        return previous
+
+    @staticmethod
+    def _remove_signal_handlers(loop: asyncio.AbstractEventLoop, previous: dict[int, Any]) -> None:
+        for sig, before in previous.items():
+            loop.remove_signal_handler(sig)
+            if before is not None:   # ex. SIG_IGN posé par __main__ : un clic tardif ne tue pas Seldon
+                signal.signal(sig, before)
+
     async def run(self) -> None:
-        compressor: asyncio.Task | None = None
+        background: list[asyncio.Task] = []
         loop = asyncio.get_running_loop()
-        for sig, on in MUTE_SIGNALS.items():
-            loop.add_signal_handler(sig, self.stt.mute, on)
+        self._task = asyncio.current_task()
+        previous = self._add_signal_handlers(loop)
         try:
             await self.start()
+            background.append(asyncio.create_task(self._warm_up()))
             if self.memory and self.memory.compress_every_s:
-                compressor = asyncio.create_task(self._compress_periodically())
+                background.append(asyncio.create_task(self._compress_periodically()))
             async for utterance in self.stt.listen():
                 try:
                     await self.process(utterance)
@@ -203,12 +256,20 @@ class Assistant:
                     await self._say_error(spoken(e, "pipeline"))
                 if self._stop_requested:
                     break
+        except asyncio.CancelledError:
+            if not self._terminating:
+                raise
+            self._task.uncancel()   # SIGTERM : arrêt normal, pas une annulation
         finally:
-            if compressor is not None:
-                compressor.cancel()
-            for sig in MUTE_SIGNALS:
-                loop.remove_signal_handler(sig)
-            await self.stop()
+            for task in background:
+                task.cancel()
+            # attendues avant stop() : la compression ne touche plus la mémoire pendant la sauvegarde
+            await asyncio.gather(*background, return_exceptions=True)
+            try:
+                await self.stop()
+            finally:
+                self._remove_signal_handlers(loop, previous)
+                self._task = None
 
     def request_stop(self) -> None:
         """Demande l'arrêt après la prise de parole en cours."""
@@ -237,36 +298,44 @@ class Assistant:
         if recent:
             said = " ; ".join(f"{u.speaker or 'inconnu'} : « {u.text} »" for u in recent)
             utterance.notes.append(f"entendu juste avant, sans t'être adressé : {said}")
-        if self.memory and (note := self.memory.absence_note(utterance.speaker, utterance.timestamp)):
-            utterance.notes.append(note)
+        try:
+            if self.memory and (note := self.memory.absence_note(utterance.speaker, utterance.timestamp)):
+                utterance.notes.append(note)
+        except Exception as e:   # note facultative : le tour continue sans elle
+            log_error(log, "Dernière visite du locuteur introuvable", e)
+
+    async def _say(self, text: str) -> None:
+        """Dit ``text`` sans s'entendre soi-même (écoute en pause), puis reste attentif."""
+        self.stt.pause()
+        try:
+            await self.tts.speak(text)
+        finally:
+            self.stt.resume()
+        self._attend()
 
     async def _say_ack(self, text: str) -> None:
         """Accusé de réception, dit pendant que l'action s'exécute (hors mémoire)."""
         await self.events.emit("acknowledge", text=text)
-        self.stt.pause()   # évite que l'assistant s'entende lui-même
         try:
-            await self.tts.speak(text)
+            await self._say(text)
         except Exception as e:
             log_error(log, "Accusé de réception non prononcé", e)
-        finally:
-            self.stt.resume()
 
     async def _say_error(self, text: str) -> None:
         """Prévient oralement d'une erreur ; ne lève jamais (la synthèse peut être en cause)."""
-        self.stt.pause()
         try:
-            await self.tts.speak(text)
-            self._attend()
+            await self._say(text)
         except Exception as e:
             log_error(log, "Message d'erreur non prononcé", e)
-        finally:
-            self.stt.resume()
 
     async def process(self, utterance: Utterance) -> None:
         async with self._busy:
             await self._process(utterance)
 
     async def _process(self, utterance: Utterance) -> None:
+        # Seul Seldon écrit des crochets dans les messages du cerveau (en-tête, [note : …]) :
+        # une phrase (ou un texte tapé) ne peut pas s'en faire passer pour une.
+        utterance.text = neutralize(utterance.text)
         if utterance.addressed is False and time.time() > self._attentive_until:
             utterance = await self._identify(utterance)
             log.debug("[%s] (non adressé) %s", utterance.speaker or "inconnu", utterance.text)
@@ -280,17 +349,22 @@ class Assistant:
             await self.events.emit("command", name=cmd.aliases[0], args=args)
             reply = await cmd.handler(self, args)
             if reply:
-                await self.tts.speak(reply)
-                self._attend()
+                await self._say(reply)
             return
         utterance = await self._identify(utterance)
         self._context_notes(utterance)
         log.info("[%s] %s", utterance.speaker or "inconnu", utterance.text)
         await self.events.emit("utterance", utterance=utterance)
-        if self.memory:
-            self.memory.begin_turn(utterance.text, utterance.speaker)
-            if note := self.memory.related_note(utterance.text):
-                utterance.notes.append(note)
+        memory = self.memory
+        if memory:
+            try:
+                memory.begin_turn(utterance.text, utterance.speaker)
+                if note := memory.related_note(utterance.text):
+                    utterance.notes.append(note)
+            except Exception as e:   # la mémoire en panne ne doit pas empêcher de répondre
+                log_error(log, "Mémoire des conversations indisponible pour ce tour", e)
+                await self.events.emit("error", error=e, stage="memory")
+                memory = None
 
         ctx = ActionContext(utterance=utterance, services=self.services, confirm=self.confirm)
         spoke = False
@@ -307,9 +381,11 @@ class Assistant:
             action = self.actions.get(name)
             if action is None:
                 return ActionResult.error(f"Action inconnue : {name}")
+            if problem := invalid_params(action, params):
+                return ActionResult.error(f"{problem} (outil {name}).")
             if name == "speak":
                 await wait_ack()
-            elif self.acknowledge and not spoke and ack is None and (text := action.acknowledge(params)):
+            elif self.acknowledge and not spoke and ack is None and (text := self._acknowledgement(action, params)):
                 # Une fois par tour, sauf si le cerveau a déjà parlé : dit en parallèle de l'action.
                 ack = asyncio.create_task(self._say_ack(text))
             await self.events.emit("action.start", name=name, params=params)
@@ -323,8 +399,8 @@ class Assistant:
             if name == "speak" and not result.is_error:
                 spoke = True
                 self._attend()
-                if self.memory:
-                    self.memory.record("assistant", params.get("text", ""))
+                if memory:
+                    memory.record("assistant", params.get("text", ""))
             await self.events.emit("action.end", name=name, result=result)
             return result
 
@@ -344,12 +420,43 @@ class Assistant:
                 if not spoke and "speak" in self.actions:
                     await execute("speak", {"text": final})
                 elif not spoke:
-                    await self.tts.speak(final)
-                    self._attend()
-                    if self.memory:
-                        self.memory.record("assistant", final)
+                    await self._say(final)
+                    if memory:
+                        memory.record("assistant", final)
+            elif not spoke:
+                log.info("Pas de réponse du cerveau à cette phrase")
         finally:
             if ack is not None and not ack.done():
                 ack.cancel()
-            if self.memory:
-                self.memory.end_turn()
+            if memory:
+                try:
+                    memory.end_turn()
+                except Exception as e:   # ne masque pas l'erreur du tour, ni une réponse déjà donnée
+                    log_error(log, "Sauvegarde de la conversation échouée", e)
+                    await self.events.emit("error", error=e, stage="memory")
+
+    @staticmethod
+    def _acknowledgement(action: Action, params: dict) -> str | None:
+        try:
+            return action.acknowledge(params)
+        except Exception as e:   # un accusé de réception raté n'empêche pas l'action
+            log_error(log, f"Accusé de réception de {action.name} impossible", e)
+            return None
+
+
+_JSON_TYPES = {"string": str, "boolean": bool, "object": dict, "array": list}
+
+
+def invalid_params(action: Action, params: dict) -> str | None:
+    """Problème évident des paramètres d'un appel d'outil (manquant, mauvais type), sinon None.
+
+    Le modèle reçoit ce message et peut corriger son appel au lieu de faire échouer l'action.
+    """
+    schema = action.input_schema or {}
+    if missing := [k for k in schema.get("required", []) if k not in params]:
+        return f"Paramètre(s) obligatoire(s) manquant(s) : {', '.join(missing)}"
+    for key, value in params.items():
+        expected = (schema.get("properties") or {}).get(key, {}).get("type")
+        if expected in _JSON_TYPES and not isinstance(value, _JSON_TYPES[expected]):
+            return f"Paramètre « {key} » : type {expected} attendu, pas {type(value).__name__}"
+    return None   # nombres : les actions convertissent elles-mêmes (« 30 » accepté)

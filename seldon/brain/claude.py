@@ -4,22 +4,23 @@ Boucle : message utilisateur -> Claude choisit des outils -> on les exécute ->
 résultats renvoyés -> ... jusqu'à ce que Claude ait terminé.
 
 L'historique est conservé entre les tours (append-only : les blocs renvoyés
-par l'API, y compris les blocs de réflexion, sont réinjectés tels quels) et
-réinitialisé après une période d'inactivité ou au-delà d'une taille maximale.
+par l'API, y compris les blocs de réflexion, sont réinjectés tels quels) ;
+au-delà d'une taille maximale, les plus anciens échanges sont allégés puis
+oubliés (``seldon.brain.history``).
 """
 
 from __future__ import annotations
 
 import base64
 import logging
-import time
 from typing import Any
 
 import anthropic
 
 from seldon.actions.base import Action
+from seldon.brain import history
 from seldon.brain.base import ActionExecutor, Brain, ends_turn
-from seldon.brain.prompts import SYSTEM_PROMPT, user_message
+from seldon.brain.prompts import STEP_LIMIT_REPLY, SYSTEM_PROMPT, user_message
 from seldon.core.errors import SeldonError
 from seldon.core.registry import register
 from seldon.core.types import ActionResult, Utterance
@@ -51,7 +52,9 @@ class ClaudeBrain(Brain):
         effort: str = "low",               # low | medium | high | xhigh | max
         max_tokens: int = 16000,
         max_steps: int = 10,               # appels API max par prise de parole
-        max_history_messages: int = 200,
+        max_history_messages: int = 200,   # au-delà, les plus anciens échanges sont oubliés
+        max_history_chars: int = 60000,    # idem en taille ; les anciens résultats d'outils sont d'abord abrégés
+        keep_images: int = 1,              # captures gardées dans l'historique (les plus récentes)
         fallbacks: bool = True,            # relance côté serveur en cas de refus
         extra_instructions: str = "",
         timeout_s: float = 120,
@@ -61,6 +64,8 @@ class ClaudeBrain(Brain):
         self.max_tokens = max_tokens
         self.max_steps = max_steps
         self.max_history_messages = max_history_messages
+        self.max_history_chars = max_history_chars
+        self.keep_images = keep_images
         self.fallbacks = fallbacks
         self.system = SYSTEM_PROMPT + (f"\n{extra_instructions.strip()}\n" if extra_instructions else "")
         self.timeout_s = timeout_s
@@ -121,8 +126,7 @@ class ClaudeBrain(Brain):
 
     async def handle(self, utterance: Utterance, actions: list[Action], execute: ActionExecutor) -> str | None:
         assert self.client is not None, "start() n'a pas été appelé"
-        if len(self.messages) > self.max_history_messages:
-            self.reset()
+        history.compact(self.messages, history.ANTHROPIC, self.max_history_chars, self.max_history_messages)
 
         pending, self._pending = self._pending, []
         content = [*pending, {"type": "text", "text": user_message(utterance)}]
@@ -138,13 +142,19 @@ class ClaudeBrain(Brain):
                 content = [b.model_dump(mode="json", exclude_none=True) for b in response.content]
                 self.messages.append({"role": "assistant", "content": content})
 
+                text = "".join(b.text for b in response.content if b.type == "text").strip()
+                calls = [b for b in response.content if b.type == "tool_use"]
+                if calls and response.stop_reason != "tool_use":
+                    # Réponse coupée (max_tokens, refus) : un tool_use sans résultat rendrait
+                    # l'historique invalide pour toutes les requêtes suivantes.
+                    kept = [b for b in content if b.get("type") != "tool_use"]
+                    content[:] = kept or [{"type": "text", "text": text or "…"}]
+                    calls = []
+
                 if response.stop_reason == "refusal":
                     log.warning("Refus du modèle : %s", response.stop_details)
                     return "Désolé, je ne peux pas faire ça."
-
-                text = "".join(b.text for b in response.content if b.type == "text").strip()
-                calls = [b for b in response.content if b.type == "tool_use"]
-                if response.stop_reason != "tool_use" or not calls:
+                if not calls:
                     return text or None
 
                 results, done = [], []
@@ -163,12 +173,14 @@ class ClaudeBrain(Brain):
                     self._pending = results
                     return None
                 self.messages.append({"role": "user", "content": results})
+                if any(r.images for _, r in done):
+                    history.drop_old_images(self.messages, history.ANTHROPIC, self.keep_images)
             # Limite atteinte : les derniers résultats d'outils partiront avec
             # le prochain message utilisateur (pas deux tours "user" d'affilée).
             log.warning("Nombre maximal d'étapes atteint (%d)", self.max_steps)
             self._pending = self.messages.pop()["content"]
-            return None
-        except Exception:
+            return STEP_LIMIT_REPLY
+        except BaseException:
             # Revient à l'état cohérent précédent (pas de tool_use sans résultat).
             del self.messages[snapshot:]
             self._pending = pending

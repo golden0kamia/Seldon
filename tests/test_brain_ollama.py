@@ -133,3 +133,28 @@ async def test_max_steps():
     a, tts = assistant(brain, [Run()])
     await a.process(Utterance("boucle", speaker="Bastien"))
     assert len(brain.client.calls) == 2 and brain.messages[-1]["role"] == "tool"
+    assert tts.said == ["Désolé, je n'ai pas réussi à terminer cette demande."]
+
+
+async def test_bad_arguments_and_thinking():
+    brain = fake_brain([resp("", call("speak", "pas du json")), resp("<think>poli</think>Bonjour !")])
+    a, tts = assistant(brain)
+    await a.process(Utterance("salut", speaker="Bastien"))
+    assert brain.messages[2]["content"].startswith("ERREUR : Arguments illisibles")
+    assert tts.said == ["Bonjour !"] and brain.messages[-1]["content"] == "Bonjour !"
+
+
+async def test_only_last_image_kept():
+    brain = fake_brain([resp("", call("take_photo", {})), resp("")] * 2, vision=True)
+    a, _ = assistant(brain, [Cam()])
+    await a.process(Utterance("photo", speaker="Bastien"))
+    await a.process(Utterance("encore", speaker="Bastien"))
+    with_images = [m for m in brain.messages if m.get("images")]
+    assert len(with_images) == 1 and with_images[0] is [m for m in brain.messages if m["role"] == "tool"][-1]
+
+
+async def test_warmup_loads_model_with_tools():
+    brain = fake_brain([resp("")])
+    await brain.warmup([Speak()])
+    sent = brain.client.calls[0]
+    assert sent["options"]["num_predict"] == 1 and sent["tools"][0]["function"]["name"] == "speak"

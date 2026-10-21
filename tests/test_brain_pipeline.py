@@ -251,3 +251,165 @@ async def test_pipeline_error_is_spoken():
     a.start, a.process = nothing, broken
     await a.run()
     assert tts.said == ["Désolé, je n'arrive pas à joindre un service dont j'ai besoin."]
+
+
+# -- robustesse du pipeline --------------------------------------------------------------
+
+async def test_truncated_tool_use_is_not_kept_in_history():
+    brain = fake_brain([resp("max_tokens", text("Je"), tool("t1", "speak", text="coupé")),
+                        resp("end_turn", text("Suite."))])
+    a, tts = assistant(brain)
+    await a.process(Utterance("parle"))
+    assert tts.said == ["Je"]
+    assert all(b["type"] != "tool_use" for m in brain.messages if m["role"] == "assistant" for b in m["content"])
+    await a.process(Utterance("encore"))   # requête suivante valide : pas de tool_use sans résultat
+    assert tts.said[-1] == "Suite."
+
+
+async def test_memory_failure_does_not_mask_the_answer(tmp_path):
+    from seldon.core.memory import ConversationMemory
+
+    class BrokenMemory(ConversationMemory):
+        def end_turn(self):
+            raise OSError(28, "No space left on device")
+
+    brain = fake_brain([resp("tool_use", tool("t1", "speak", text="Voilà."))])
+    tts = RecordingTTS()
+    a = Assistant(TextInput(), NoSpeakerId(), brain, tts, [Speak()],
+                  memory=BrokenMemory(brain, "claude", dir=str(tmp_path)))
+    errors = []
+    a.events.on("error", lambda error, stage: errors.append(stage))
+    await a.process(Utterance("salut"))
+    assert tts.said == ["Voilà."] and errors == ["memory"]
+
+
+async def test_failing_acknowledgement_does_not_break_the_action():
+    from seldon.actions.base import Action
+    from seldon.core.types import ActionResult
+
+    class Odd(Action):
+        name, description = "odd", "accusé de réception défaillant"
+        input_schema = {"type": "object", "properties": {}}
+
+        def acknowledge(self, params):
+            raise KeyError("oups")
+
+        async def run(self, params, ctx):
+            return ActionResult("fait")
+
+    brain = fake_brain([resp("tool_use", tool("a", "odd")), resp("end_turn", text("Fait."))])
+    a, tts = assistant(brain, [Odd()])
+    await a.process(Utterance("vas-y"))
+    assert tts.said == ["Fait."]
+
+
+async def test_command_reply_pauses_listening():
+    class PausingInput(TextInput):
+        def __init__(self):
+            self.calls = []
+
+        def pause(self):
+            self.calls.append("pause")
+
+        def resume(self):
+            self.calls.append("resume")
+
+    stt, tts = PausingInput(), RecordingTTS()
+    a = Assistant(stt, NoSpeakerId(), fake_brain([]), tts, [Speak()])
+    await a.process(Utterance("/actions"))
+    assert tts.said and stt.calls == ["pause", "resume"]
+
+
+@pytest.mark.skipif(not MUTE_SIGNALS, reason="signaux POSIX")
+async def test_sigterm_stops_cleanly_and_previous_handlers_are_restored():
+    import asyncio
+    import os
+    import signal
+
+    stopped = []
+
+    class Waiting(TextInput):
+        async def listen(self):
+            os.kill(os.getpid(), signal.SIGTERM)
+            await asyncio.Event().wait()
+            yield
+
+        async def stop(self):
+            stopped.append(True)
+
+    signal.signal(signal.SIGUSR1, signal.SIG_IGN)   # comme __main__ avant le démarrage
+    try:
+        await asyncio.wait_for(Assistant(Waiting(), NoSpeakerId(), fake_brain([]), RecordingTTS(), [Speak()]).run(), 2)
+        assert stopped == [True]
+        assert signal.getsignal(signal.SIGUSR1) is signal.SIG_IGN
+        assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+    finally:
+        signal.signal(signal.SIGUSR1, signal.SIG_DFL)
+
+
+async def test_brain_is_warmed_up_in_background():
+    import asyncio
+
+    warmed = asyncio.Event()
+
+    class Waiting(TextInput):
+        async def listen(self):
+            await asyncio.wait_for(warmed.wait(), 1)
+            return
+            yield
+
+    brain = fake_brain([])
+
+    async def warmup(actions):
+        assert [x.name for x in actions] == ["speak"]
+        warmed.set()
+
+    brain.warmup = warmup
+    await Assistant(Waiting(), NoSpeakerId(), brain, RecordingTTS(), [Speak()]).run()
+    assert warmed.is_set()
+
+
+def test_memory_options_are_checked():
+    from seldon.config import Config
+    from seldon.core.errors import SeldonError
+
+    for memory, match in [("{compress_every_s: '30 min'}", "nombre"), ("{dirr: x}", "dir"),
+                          ("{enabled: 'non'}", "true ou false")]:
+        cfg = Config.parse(f"stt: text\nbrain: claude\nmemory: {memory}\nactions: [speak]\n")
+        with pytest.raises(SeldonError, match=match):
+            Assistant.from_config(cfg)
+
+
+def test_pending_keyboard_read_does_not_block_shutdown(monkeypatch):
+    import asyncio
+    import threading
+    import time
+
+    from seldon.core.pipeline import console_confirm
+
+    release = threading.Event()
+    monkeypatch.setattr("builtins.input", lambda *a: (release.wait(5), "o")[1])
+
+    async def main():
+        task = asyncio.create_task(console_confirm("Lancer ?"))
+        await asyncio.sleep(0.05)
+        task.cancel()   # arrêt de Seldon pendant la question
+
+    started = time.perf_counter()
+    asyncio.run(main())
+    assert time.perf_counter() - started < 1   # avec asyncio.to_thread(input), l'arrêt attendait la réponse
+    release.set()
+
+
+async def test_console_confirm_answers(monkeypatch):
+    from seldon.core.pipeline import console_confirm
+
+    answers = iter(["Oui", "non"])
+    monkeypatch.setattr("builtins.input", lambda *a: next(answers))
+    assert await console_confirm("A ?") is True and await console_confirm("B ?") is False
+
+    def eof(*a):
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", eof)
+    assert await console_confirm("C ?") is False

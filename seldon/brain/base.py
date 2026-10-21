@@ -25,6 +25,10 @@ class Brain(ABC):
     async def start(self) -> None:
         ...
 
+    async def warmup(self, actions: list[Action]) -> None:
+        """Prépare le modèle en arrière-plan au démarrage (chargement, cache du prompt système et
+        des outils) pour que la première phrase ne l'attende pas. Optionnel."""
+
     @abstractmethod
     async def handle(
         self,

@@ -384,3 +384,67 @@ async def test_mute_drops_current_and_queued_speech(caplog):
     await stt.stop()
     assert round(len(u.audio) / SAMPLE_RATE, 1) == 1.7
     assert [r.message for r in caplog.records if "[micro]" in r.message] == ["[micro] coupé"]
+
+
+# -- robustesse de l'écoute ------------------------------------------------------------
+
+def test_overlapping_pauses_resume_only_at_the_end():
+    stt = WhisperSTT()
+    stt.pause()          # accusé de réception…
+    stt.pause()          # …et annonce de fond en même temps
+    stt.resume()
+    assert stt._paused.is_set()   # Seldon parle encore : on n'écoute pas
+    stt.resume()
+    assert not stt._paused.is_set()
+    stt.resume()                  # reprise en trop : sans effet
+    stt.pause()
+    assert stt._paused.is_set()
+
+
+def test_cpu_threads_auto():
+    assert 4 <= WhisperSTT().cpu_threads <= 8 and WhisperSTT(cpu_threads=2).cpu_threads == 2
+
+
+async def test_transcription_error_does_not_stop_listening(caplog):
+    stt = WhisperSTT()
+    stt._segments = asyncio.Queue()
+    results = iter([RuntimeError("ctranslate2 en panne"), ("Bonjour", "fr")])
+
+    def transcribe(audio):
+        r = next(results)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+    stt.transcribe = transcribe
+    for _ in range(2):
+        stt._segments.put_nowait(np.zeros(SAMPLE_RATE, np.float32))
+
+    async def first():
+        async for u in stt.listen():
+            return u
+
+    u = await asyncio.wait_for(first(), 2)
+    assert u.text == "Bonjour" and "Transcription échouée" in caplog.text
+
+
+async def test_vad_thread_survives_vad_errors(caplog):
+    stt = WhisperSTT(vad="energy", silence_ms=300, min_speech_ms=100)
+    calls = {"n": 0}
+    energy = EnergyVAD(-40)
+
+    def flaky(frame):
+        calls["n"] += 1
+        if calls["n"] <= 3:
+            raise RuntimeError("onnxruntime")
+        return energy(frame)
+
+    stt.vad = type("Flaky", (), {"__call__": staticmethod(flaky), "reset": staticmethod(lambda: None)})()
+    stt._segments = asyncio.Queue()
+    stt._worker = threading.Thread(target=stt._vad_loop, args=(asyncio.get_running_loop(),), daemon=True)
+    stt._worker.start()
+    for c in frames(0.2, 0.3) + frames(1.0, 0.3) + frames(0.5, 0.0):
+        stt._frames.put(c)
+    segment = await asyncio.wait_for(stt._segments.get(), 5)
+    await stt.stop()
+    assert len(segment) > SAMPLE_RATE / 2 and caplog.text.count("VAD") == 1

@@ -176,3 +176,17 @@ async def test_pyttsx3_speak(monkeypatch):
     assert engine.props == {"voice": "roa/fr", "rate": 150, "volume": 0.5}
     await tts.stop()
     assert engine.stopped
+
+
+async def test_piper_cancelled_speak_stops_playback(monkeypatch):
+    sd = FakeSD(block=True)
+    monkeypatch.setitem(sys.modules, "sounddevice", sd)
+    tts = make_piper(FakeVoice(5))
+    task = asyncio.create_task(tts.speak("Un long texte."))
+    await asyncio.to_thread(sd.started.wait, 5)
+    task.cancel()   # ex. tour annulé à l'arrêt : le thread de lecture ne doit pas continuer seul
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert sd.done.is_set() and tts._stop.is_set()
+    await asyncio.sleep(0.1)
+    assert len(sd.played) == 1
