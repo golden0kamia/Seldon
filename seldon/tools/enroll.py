@@ -54,11 +54,14 @@ def speaker_stage(config: str, engine: str | None, voices_dir: str | None) -> St
 async def run(args: argparse.Namespace) -> None:
     stage = speaker_stage(args.config, args.engine, args.voices_dir)
     identifier = registry.create("speakers", stage.engine, **stage.options)
+    name = identifier.canonical_name(args.name)   # nom invalide : erreur avant d'enregistrer quoi que ce soit
     await identifier.start()
+    if name.casefold() in {k.casefold() for k in identifier.known_speakers()}:
+        print(f"Une voix « {name} » existe déjà : ces échantillons y seront ajoutés.")
 
     samples = []
     for i in range(args.samples):
-        phrase = PHRASES[i % len(PHRASES)].format(name=args.name)
+        phrase = PHRASES[i % len(PHRASES)].format(name=name)
         input(f"\n[{i + 1}/{args.samples}] Appuyez sur Entrée puis lisez à voix haute pendant {args.seconds:g} s :\n  « {phrase} »")
         print("  Enregistrement...")
         audio = await asyncio.to_thread(record, args.seconds, args.input_device)
@@ -67,8 +70,8 @@ async def run(args: argparse.Namespace) -> None:
             print("  Attention : niveau très faible, le micro est-il bien branché ?")
         samples.append(audio)
 
-    await identifier.enroll(args.name, samples)
-    print(f"\nVoix de {args.name} enregistrée ({len(samples)} échantillon(s)).")
+    await identifier.enroll(name, samples)
+    print(f"\nVoix de {name} enregistrée ({len(samples)} échantillon(s)).")
 
 
 def main() -> None:
@@ -81,6 +84,8 @@ def main() -> None:
     parser.add_argument("--voices-dir", help="dossier des empreintes vocales")
     parser.add_argument("--input-device", help="micro sounddevice (index ou nom)")
     args = parser.parse_args()
+    if args.samples < 1 or not 0 < args.seconds <= 60:
+        parser.error("--samples doit valoir au moins 1 et --seconds être compris entre 0 et 60")
     if args.input_device and args.input_device.isdigit():
         args.input_device = int(args.input_device)
 

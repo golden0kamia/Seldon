@@ -10,6 +10,8 @@ from seldon.actions.base import Action
 from seldon.core.registry import register
 from seldon.core.types import ActionContext, ActionResult
 
+MAX_TITLE = 200   # caractères gardés d'un titre proposé par le cerveau
+
 
 @register("actions", "conversations")
 class Conversations(Action):
@@ -59,13 +61,16 @@ class Conversations(Action):
 
         if op == "chercher":
             current = memory.current.id if memory.current else None
-            found = [c for c in memory.search(params.get("query", ""), self.limit + 1) if c.id != current]
+            found = [c for c in memory.search(str(params.get("query") or ""), self.limit + 1) if c.id != current]
             if not found:
                 return ActionResult("Aucune conversation correspondante.")
             return ActionResult("\n".join(f"- id={c.id} : {c.describe()}" for c in found[: self.limit]))
 
         if op == "reprendre":
-            conv = memory.load(str(params.get("id", "")))
+            conv_id = str(params.get("id") or "")
+            if memory.is_current(conv_id):
+                return ActionResult("C'est déjà la conversation en cours : rien à reprendre.")
+            conv = memory.load(conv_id)   # identifiant invalide (chemin…) : None
             if conv is None:
                 return ActionResult.error("Conversation introuvable : utilise d'abord operation='chercher'.")
             memory.request_resume(conv.id)
@@ -92,7 +97,7 @@ class Conversations(Action):
         name = f"« {conv.title or 'sans titre'} »"
 
         if op == "renommer":
-            title = " ".join(str(params.get("titre", "")).split())
+            title = " ".join(str(params.get("titre") or "").split())[:MAX_TITLE]
             if not title:
                 return ActionResult.error("Précise le nouveau titre (paramètre `titre`).")
             if not await ctx.confirm(f"Renommer la conversation {name} en « {title} » ?"):
@@ -101,7 +106,7 @@ class Conversations(Action):
             return ActionResult(f"Conversation renommée « {title} ».")
 
         if op == "oublier":
-            text = str(params.get("texte", "")).strip()
+            text = str(params.get("texte") or "").strip()
             found = conv.matching(text) if text else []
             if not found:
                 return ActionResult.error(f"Aucun message de {name} ne contient « {text} ».")

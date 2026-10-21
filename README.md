@@ -78,7 +78,8 @@ pytest                              # tests (sans micro, caméra ni modèle)
 Commandes locales (traitées sans passer par le modèle, au clavier ou à la voix) :
 `exit` / `quitter`, `nouvelle` / `oublie tout`, `conversations [mots-clés]`,
 `reprendre N|mots-clés`, `supprimer N`, `actions`, `aide`. Le « / » initial
-est facultatif (obligatoire pour passer des arguments).
+est facultatif (obligatoire pour passer des arguments). Un numéro désigne une
+ligne de la dernière liste affichée par `conversations`.
 
 La configuration est vérifiée au lancement : une option qui attend un nombre
 ou `true` / `false` refuse `"700ms"` ou `"non"`, et une clé mal orthographiée
@@ -134,7 +135,10 @@ sélection (état « modifié », moteur choisi, onglet actif) ne déplace les
 ### Mémoire des conversations
 
 Chaque conversation est sauvegardée dans `data/conversations/` (transcription +
-historique complet du cerveau) après chaque échange. Après 10 min de silence,
+historique complet du cerveau) après chaque échange. Conversations, empreintes
+vocales et photos sont des données personnelles : fichiers en `0600`, dossiers
+créés en `0700`, écriture atomique. Un identifiant de conversation fourni par
+le cerveau ne peut désigner qu'un fichier de ce dossier. Après 10 min de silence,
 une nouvelle conversation commence ; l'ancienne reste disponible. Pour reprendre
 un sujet, il suffit de le demander (« on reprend notre discussion sur les
 tomates ? ») : le cerveau cherche et recharge la conversation via l'outil
@@ -159,7 +163,8 @@ conversation ; en cas d'accord, toute la nouvelle y est rattachée.
 jamais), les conversations de plus de `compress_max_chars` caractères (20 000)
 sont allégées : sauf les `compress_keep` derniers messages (12), leur début
 est remplacé par un résumé rédigé par le cerveau (ou calculé localement s'il
-ne sait pas résumer). La vérification attend la fin de l'échange en cours.
+ne sait pas résumer). Le résumé est rédigé sans bloquer Seldon : seul son
+enregistrement attend la fin de l'échange en cours.
 
 Commandes terminal (`mode: allowlist`), classées en trois niveaux :
 
@@ -206,6 +211,13 @@ L'analyse reste statique : pour un admin, une commande standard (`make`,
 `python script.py`…) s'exécute sans confirmation ; `mode: confirm` fait tout
 valider.
 
+L'action `claude_code` (Claude Code en mode non interactif) ne travaille que
+sous `allowed_dirs` (par défaut son `cwd`), reçoit la tâche comme un texte
+(jamais comme une option de la ligne de commande), plafonne sa sortie
+(`max_output_bytes`) et demande toujours confirmation avec
+`permission_mode: bypassPermissions`. Une annonce de fin en arrière-plan
+attend la fin de l'échange en cours.
+
 ### Voix inconnues
 
 Seldon reconnaît les personnes à leur voix. Quand une voix n'est pas encore
@@ -214,7 +226,9 @@ enregistrée, il répond puis demande son prénom ; dès que la personne le donn
 des phrases qu'elle vient de prononcer, via l'action `voix`. Pas besoin de
 passer par `seldon.tools.enroll`, qui reste utile pour une empreinte plus
 précise (phrases lues au calme). On peut aussi lui demander qui il connaît, ou
-d'oublier une voix (avec confirmation). Une voix inconnue reste
+d'oublier une voix (avec confirmation). Ajouter une voix inconnue à une voix
+déjà enregistrée (« je suis Bastien ») demande une **confirmation** : sinon,
+n'importe qui pourrait prendre l'identité, et les droits, d'un admin. Une voix inconnue reste
 enregistrable pendant `unknown_memory_s` (10 min par défaut) ; retirer `voix`
 de `actions` désactive ce comportement.
 
@@ -274,7 +288,7 @@ haut-parleurs forts, monter `barge_in_db` (ex. -25) ou mettre
 | `seldon/brain/` | Décision | `Brain.handle(utterance, actions, execute)` |
 | `seldon/actions/` | Outils du cerveau | `Action.run(params, ctx) -> ActionResult` |
 | `seldon/tts/` | Texte → parole | `TTSEngine.speak(text)` |
-| `seldon/core/` | Pipeline, registre de plugins, bus d'événements | |
+| `seldon/core/` | Pipeline, registre de plugins, bus d'événements, mémoire, écriture privée des fichiers (`storage.py`), balises lues par l'interface (`tags.py`) | |
 | `seldon/gui/` | Interface Qt 6 (paramètres, voix et conversations enregistrées, fichiers, éditeur, thème) | lit les plugins par AST, sans les importer |
 
 ### Ajouter une action

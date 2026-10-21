@@ -26,25 +26,45 @@ les anciens messages sont remplacés par une entrée ``role: "summary"``.
 La mémoire sait aussi quand chaque personne a parlé pour la dernière fois :
 ``absence_note()`` signale au cerveau quelqu'un qui revient après une longue
 absence (ou qui lui parle pour la première fois), pour qu'il l'accueille.
+
+Sécurité : les identifiants viennent souvent du cerveau (donc de ce qu'on lui
+dit) ; seuls ceux de la forme ``[\\w-]+`` désignent un fichier, toujours dans
+``dir``, et l'identifiant d'une conversation lue est le nom de son fichier. Les
+fichiers sont privés et écrits de façon atomique (``seldon.core.storage``).
+
+Performance : les conversations lues sur disque (sans l'état du cerveau) et leurs
+mots sont gardés en cache et relus seulement si leur fichier change (inode, date,
+taille) : chercher un sujet ne relit pas tout le dossier à chaque phrase.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from contextlib import AbstractAsyncContextManager, nullcontext
+import os
+import re
+import threading
 import time
 import unicodedata
 import uuid
 from collections import Counter
-from dataclasses import asdict, dataclass, field
+from contextlib import AbstractAsyncContextManager, nullcontext
+from dataclasses import dataclass, field, fields
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from seldon.brain.base import Brain
+from seldon.brain.prompts import neutralize
+from seldon.core.storage import write_private
 
 log = logging.getLogger(__name__)
+
+# Identifiant de conversation = nom de son fichier. Format de _new() : AAAAMMJJ-HHMMSS-xxxx ; les
+# anciens noms (lettres, chiffres, _ et -) restent acceptés. Ni « / » ni « . » : jamais hors du dossier.
+_ID = re.compile(r"[\w-]{1,100}")
 
 _STOPWORDS = set(
     "le la les un une des de du et ou en a au aux sur pour par avec dans que qui quoi est "
@@ -61,6 +81,15 @@ _FILLER = set(
 )
 
 
+def valid_id(conv_id: Any) -> bool:
+    """Vrai si ``conv_id`` peut désigner un fichier de conversation (sans sortir du dossier)."""
+    return isinstance(conv_id, str) and _ID.fullmatch(conv_id) is not None
+
+
+_WORD = re.compile(r"[^\W_]+")   # suite de caractères alphanumériques (str.isalnum)
+
+
+@lru_cache(maxsize=1 << 16)   # le vocabulaire se répète beaucoup d'une conversation à l'autre
 def _fold(word: str) -> str:
     return unicodedata.normalize("NFKD", word.lower()).encode("ascii", "ignore").decode()
 
@@ -68,7 +97,7 @@ def _fold(word: str) -> str:
 def _tokens(text: str) -> dict[str, str]:
     """Mots significatifs : forme sans accents ni majuscules -> forme d'origine (en minuscules)."""
     out: dict[str, str] = {}
-    for word in "".join(c if c.isalnum() else " " for c in text).split():
+    for word in _WORD.findall(text):
         key = _fold(word)
         if len(key) > 2 and key not in _STOPWORDS:
             out.setdefault(key, word.lower())
@@ -76,7 +105,7 @@ def _tokens(text: str) -> dict[str, str]:
 
 
 def _words(text: str) -> set[str]:
-    return set(_tokens(text))
+    return {key for word in set(_WORD.findall(text)) if len(key := _fold(word)) > 2 and key not in _STOPWORDS}
 
 
 def _duration(seconds: float) -> str:
@@ -161,6 +190,71 @@ SUMMARY_INSTRUCTIONS = (
 )
 
 
+def _number(value: Any) -> bool:
+    """Horodatage utilisable : nombre fini (ni booléen, ni NaN), dans les limites de datetime."""
+    return type(value) in (int, float) and -1e11 < value < 1e11
+
+
+def _conversation(data: Any, conv_id: str, with_state: bool = False) -> Conversation:
+    """Conversation lue dans ``<conv_id>.json`` (son identifiant est toujours le nom du fichier).
+
+    Les clés inconnues sont ignorées ; ValueError si une donnée utile est invalide.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("objet JSON attendu")
+    created, updated, brain = data.get("created"), data.get("updated"), data.get("brain")
+    if not (_number(created) and _number(updated) and isinstance(brain, str)):
+        raise ValueError("champs created / updated / brain invalides")
+    title, speakers, transcript = data.get("title") or "", data.get("speakers") or [], data.get("transcript") or []
+    if not (isinstance(title, str) and isinstance(speakers, list) and all(isinstance(s, str) for s in speakers)
+            and isinstance(transcript, list)):
+        raise ValueError("champs title / speakers / transcript invalides")
+    for m in transcript:
+        if not (isinstance(m, dict) and isinstance(m.get("role"), str) and isinstance(m.get("text"), str)
+                and isinstance(m.get("speaker"), (str, type(None)))):
+            raise ValueError("message invalide dans la transcription")
+        if not _number(m.get("ts")):
+            m["ts"] = updated
+    state = data.get("state") if with_state else None
+    return Conversation(id=conv_id, created=created, updated=updated, brain=brain, title=title,
+                        speakers=speakers, transcript=transcript, state=state if isinstance(state, dict) else {})
+
+
+def _read(path: Path, conv_id: str, with_state: bool = False) -> Conversation | None:
+    """Conversation du fichier ``path`` ; None (avec un avertissement) s'il est illisible."""
+    try:
+        return _conversation(json.loads(path.read_text(encoding="utf-8")), conv_id, with_state)
+    except FileNotFoundError:   # supprimée entre-temps
+        return None
+    except (OSError, ValueError, TypeError, RecursionError) as e:
+        log.warning("Conversation illisible : %s (%s)", path, e)
+        return None
+
+
+def _valid_state(state: dict[str, Any]) -> bool:
+    """État du cerveau restaurable tel quel (sinon : reconstruit à partir de la transcription)."""
+    messages = state.get("messages")
+    return bool(messages) and isinstance(messages, list) and all(isinstance(m, dict) for m in messages)
+
+
+def _same(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    return (a["role"], a["text"], a["ts"]) == (b["role"], b["text"], b["ts"])
+
+
+@dataclass
+class _Indexed:
+    """Conversation lue sur disque (sans l'état du cerveau) et ses mots, gardés en cache."""
+
+    stamp: tuple[int, int, int]   # (inode, date de modification, taille) du fichier lu
+    conv: Conversation
+    title_words: set[str]
+    body_words: set[str]
+
+    @classmethod
+    def of(cls, conv: Conversation, stamp: tuple[int, int, int] = (0, 0, 0)) -> _Indexed:
+        return cls(stamp, conv, _words(conv.title), _words(" ".join(m["text"] for m in conv.transcript)))
+
+
 class ConversationMemory:
     def __init__(
         self,
@@ -193,11 +287,28 @@ class ConversationMemory:
         self._suggested: tuple[str, str] | None = None   # (conversation en cours, conversation proposée)
         self._turn_start = 0   # début du tour en cours dans la transcription
         self._turn_state: dict[str, Any] = {}   # état du cerveau au début du tour
+        self._index: dict[str, _Indexed] = {}   # cache des conversations sur disque, par identifiant
+        self._index_lock = threading.Lock()   # _refresh() tourne aussi dans un thread
+        self.listing: list[str] = []   # identifiants du dernier affichage de /conversations
+        # Lecture initiale en arrière-plan (pendant le chargement des modèles), pas à la première phrase.
+        threading.Thread(target=self._warm_up, name="seldon-memory", daemon=True).start()
+
+    def _warm_up(self) -> None:
+        try:
+            self._refresh()
+        except Exception as e:   # le cache sera rempli au premier besoin
+            log.warning("Lecture des conversations échouée : %s", e)
 
     # --- stockage -----------------------------------------------------------
 
     def _path(self, conv_id: str) -> Path:
-        return self.dir / f"{conv_id}.json"
+        """Fichier de ``conv_id`` ; ValueError si l'identifiant (souvent fourni par le cerveau) est invalide."""
+        if not valid_id(conv_id):
+            raise ValueError(f"Identifiant de conversation invalide : {str(conv_id)[:80]!r}")
+        path = self.dir / f"{conv_id}.json"
+        if path.resolve().parent != self.dir.resolve():   # lien symbolique vers l'extérieur
+            raise ValueError(f"Conversation hors du dossier : {conv_id}")
+        return path
 
     def save(self, state: dict[str, Any] | None = None) -> None:
         conv = self.current
@@ -207,39 +318,88 @@ class ConversationMemory:
         self._write(conv)
 
     def _write(self, conv: Conversation) -> None:
-        self.dir.mkdir(parents=True, exist_ok=True)
-        tmp = self._path(conv.id).with_suffix(".tmp")
-        tmp.write_text(json.dumps(asdict(conv), ensure_ascii=False), encoding="utf-8")
-        tmp.replace(self._path(conv.id))
+        path = self._path(conv.id)
+        data = json.dumps({f.name: getattr(conv, f.name) for f in fields(conv)}, ensure_ascii=False)
+        write_private(path, data.encode("utf-8"))
+        self._uncache(conv.id)
+
+    def _uncache(self, conv_id: str) -> None:
+        with self._index_lock:
+            self._index.pop(conv_id, None)
 
     def load(self, conv_id: str) -> Conversation | None:
-        path = self._path(conv_id)
-        if not path.is_file():
+        """Conversation ``conv_id`` avec l'état du cerveau ; None si absente, illisible ou id invalide."""
+        try:
+            path = self._path(conv_id)
+        except ValueError as e:
+            if conv_id:
+                log.warning("%s", e)
             return None
-        return Conversation(**json.loads(path.read_text(encoding="utf-8")))
+        return _read(path, conv_id, with_state=True)
+
+    def _refresh(self) -> dict[str, _Indexed]:
+        """Met le cache à jour : seuls les fichiers nouveaux ou modifiés sont relus (bloquant)."""
+        with self._index_lock:
+            try:
+                entries = list(os.scandir(self.dir))
+            except FileNotFoundError:
+                entries = []
+            except OSError as e:
+                log.warning("Dossier des conversations illisible : %s (%s)", self.dir, e)
+                entries = []
+            current = self.current.id if self.current and self.current.transcript else None
+            old, new = self._index, {}
+            for entry in entries:
+                conv_id = entry.name[:-5]
+                if not entry.name.endswith(".json") or not valid_id(conv_id) or entry.is_symlink():
+                    continue   # comme load() : jamais un fichier hors du dossier
+                cached = old.get(conv_id)
+                if conv_id == current and cached is None:   # remplacée par self.current : inutile de la lire
+                    continue
+                try:
+                    st = entry.stat()
+                except OSError:
+                    continue
+                stamp = (st.st_ino, st.st_mtime_ns, st.st_size)
+                if cached is not None and cached.stamp == stamp:
+                    new[conv_id] = cached
+                elif (conv := _read(Path(entry.path), conv_id)) is not None:
+                    new[conv_id] = _Indexed.of(conv, stamp)
+            self._index = new
+            return new
+
+    def _indexed(self) -> list[_Indexed]:
+        """Conversations (celle en cours comprise) et leurs mots, la plus récente d'abord."""
+        index = self._refresh()
+        current = self.current if self.current and self.current.transcript else None
+        out = [e for conv_id, e in index.items() if current is None or conv_id != current.id]
+        if current is not None:
+            out.append(_Indexed.of(current))
+        return sorted(out, key=lambda e: e.conv.updated, reverse=True)
 
     def all(self) -> list[Conversation]:
-        """Toutes les conversations, la plus récente d'abord (sans l'état du cerveau)."""
-        convs = load_conversations(self.dir)
-        if self.current and self.current.transcript:
-            convs = [c for c in convs if c.id != self.current.id] + [self.current]
-        return sorted(convs, key=lambda c: c.updated, reverse=True)
+        """Toutes les conversations, la plus récente d'abord (sans l'état du cerveau).
+
+        Elles sont partagées avec le cache : les lire seulement (``load()`` pour en modifier une).
+        """
+        return [e.conv for e in self._indexed()]
 
     def search(self, query: str = "", limit: int = 10) -> list[Conversation]:
         """Conversations correspondant le mieux aux mots de ``query`` (récentes si vide)."""
-        terms = _words(query)
+        terms = _words(str(query or ""))
         if not terms:
             return self.all()[:limit]
         return [c for _, c in self._scored(terms)[:limit]]
 
     def _scored(self, terms: set[str]) -> list[tuple[int, Conversation]]:
         """(nombre de mots communs, conversation), la plus pertinente d'abord (titre compté triple)."""
+        if not terms:
+            return []
         scored = []
-        for conv in self.all():
-            title, body = _words(conv.title), _words(" ".join(m["text"] for m in conv.transcript))
-            score = 3 * len(terms & title) + len(terms & body)
+        for e in self._indexed():
+            score = 3 * len(terms & e.title_words) + len(terms & e.body_words)
             if score:
-                scored.append((score, conv.updated, len(terms & (title | body)), conv))
+                scored.append((score, e.conv.updated, len(terms & (e.title_words | e.body_words)), e.conv))
         scored.sort(key=lambda s: (s[0], s[1]), reverse=True)
         return [(common, c) for _, _, common, c in scored]
 
@@ -264,11 +424,13 @@ class ConversationMemory:
     def last_seen(self, speaker: str) -> tuple[float, str, str] | None:
         """(instant, titre, id de la conversation) de la dernière prise de parole de ``speaker``."""
         if self._last_seen is None:
-            self._last_seen = {}
-            for conv in reversed(self.all()):   # la plus récente en dernier : elle l'emporte
+            seen: dict[str, tuple[float, str, str]] = {}
+            for conv in self.all():
                 for m in conv.transcript:
-                    if m["role"] == "user" and m.get("speaker"):
-                        self._last_seen[m["speaker"]] = (m["ts"], conv.title, conv.id)
+                    who = m.get("speaker")
+                    if m["role"] == "user" and who and (who not in seen or m["ts"] > seen[who][0]):
+                        seen[who] = (m["ts"], conv.title, conv.id)
+            self._last_seen = seen
         return self._last_seen.get(speaker)
 
     def absence_note(self, speaker: str | None, now: float | None = None) -> str | None:
@@ -343,18 +505,29 @@ class ConversationMemory:
         if self.current and self.current.id == conv_id:
             self.current = None
             self.brain.reset()
-        path = self._path(conv_id)
-        if path.is_file():
-            path.unlink()
-            return True
-        return False
+        return self._remove(conv_id)
+
+    def _remove(self, conv_id: str) -> bool:
+        """Supprime le fichier de ``conv_id`` ; faux s'il n'existe pas (ou si l'id est invalide)."""
+        try:
+            path = self._path(conv_id)
+        except ValueError as e:
+            log.warning("%s", e)
+            return False
+        self._uncache(conv_id)
+        if not path.is_file():
+            return False
+        path.unlink(missing_ok=True)
+        return True
 
     # --- cycle de vie -----------------------------------------------------------
 
     def _new(self) -> Conversation:
         now = time.time()
-        conv_id = f"{datetime.fromtimestamp(now):%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:4]}"
-        return Conversation(id=conv_id, created=now, updated=now, brain=self.brain_kind)
+        while True:   # identifiant libre : ne jamais écraser une autre conversation
+            conv_id = f"{datetime.fromtimestamp(now):%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:4]}"
+            if not (self.dir / f"{conv_id}.json").exists():
+                return Conversation(id=conv_id, created=now, updated=now, brain=self.brain_kind)
 
     def new(self) -> None:
         """Sauvegarde la conversation en cours et en commence une nouvelle."""
@@ -368,7 +541,7 @@ class ConversationMemory:
         if target is None:
             return None
         self.save()
-        if target.brain == self.brain_kind and target.state:
+        if target.brain == self.brain_kind and _valid_state(target.state):
             self.brain.set_state(target.state)
         else:
             self.brain.set_state({"messages": transcript_messages(target.transcript)})
@@ -378,7 +551,8 @@ class ConversationMemory:
         return target
 
     def request_resume(self, conv_id: str) -> None:
-        self._pending.append(("switch", conv_id))
+        if not self.is_current(conv_id):   # déjà en cours : rien à faire
+            self._pending.append(("switch", conv_id))
 
     def request_new(self) -> None:
         self._pending.append(("new", None))
@@ -400,6 +574,7 @@ class ConversationMemory:
         conv = self.current
         if conv is None:
             return
+        text = "" if text is None else str(text)
         conv.transcript.append({"role": role, "text": text, "speaker": speaker, "ts": time.time()})
         conv.updated = time.time()
         if role == "user":
@@ -444,6 +619,8 @@ class ConversationMemory:
         nouvelle conversation y est déplacée (elle ne contient que ce sujet).
         """
         old = self.current
+        if old is not None and old.id == conv_id:   # déjà la conversation en cours
+            return
         start = 0 if old and self._suggested == (old.id, conv_id) else self._turn_start
         turn = old.transcript[start:] if old else []
         if old:
@@ -457,41 +634,42 @@ class ConversationMemory:
                 old.transcript.extend(turn)
             self.save()
             return
-        conv = self.current
         for m in turn:
             self.record(m["role"], m["text"], m.get("speaker"))
         for user, reply in _exchanges(turn):
             self.brain.append_exchange(user, reply)
         self.save()
-        if old and not old.transcript:   # conversation vide après déplacement : supprimée
-            self._path(old.id).unlink(missing_ok=True)
-
+        if old and not old.transcript and not self.is_current(old.id):   # vide après déplacement : supprimée
+            self._remove(old.id)
 
     # --- compression -------------------------------------------------------------
 
     async def compress_all(self, lock: AbstractAsyncContextManager | None = None) -> int:
         """Résume le début des conversations trop volumineuses ; renvoie leur nombre.
 
-        ``lock`` (verrou du pipeline) est pris pour chaque conversation, pour ne
-        jamais en modifier une pendant un tour du cerveau.
+        ``lock`` (verrou du pipeline) n'est pris que pour appliquer chaque résumé, pas
+        pendant sa rédaction : aucune conversation n'est modifiée pendant un tour du
+        cerveau, et l'utilisateur n'attend pas la fin d'un résumé pour être entendu.
         """
+        await asyncio.to_thread(self._refresh)   # lecture des fichiers hors de la boucle
         done = 0
         for conv in self.all():
             if conv.size() <= self.compress_max_chars or len(conv.transcript) <= self.compress_keep + 1:
                 continue
-            async with lock or nullcontext():
-                if await self.compress(conv.id):
-                    done += 1
+            if await self.compress(conv.id, lock):
+                done += 1
         return done
 
-    async def compress(self, conv_id: str) -> bool:
-        """Remplace les messages de ``conv_id`` sauf les ``compress_keep`` derniers par un résumé."""
-        current = self.is_current(conv_id)
-        conv = self.current if current else self.load(conv_id)
+    async def compress(self, conv_id: str, lock: AbstractAsyncContextManager | None = None) -> bool:
+        """Remplace les messages de ``conv_id`` sauf les ``compress_keep`` derniers par un résumé.
+
+        Le résumé est rédigé sans ``lock`` ; il n'est appliqué (sous ``lock``) que si ces
+        messages n'ont pas changé entre-temps (oubli, suppression, autre compression…).
+        """
+        conv = self.current if self.is_current(conv_id) else self.load(conv_id)
         if conv is None or len(conv.transcript) <= self.compress_keep + 1:
             return False
-        cut = len(conv.transcript) - self.compress_keep
-        old = conv.transcript[:cut]
+        old = [dict(m) for m in conv.transcript[: len(conv.transcript) - self.compress_keep]]
         text = "\n".join(f"{_ROLE_LABELS.get(m['role'], 'Seldon')}"
                          f"{' (' + m['speaker'] + ')' if m.get('speaker') else ''} : {m['text']}" for m in old)
         summary = None
@@ -499,13 +677,24 @@ class ConversationMemory:
             summary = await self.brain.summarize(SUMMARY_INSTRUCTIONS, text)
         except Exception as e:
             log.warning("Résumé par le cerveau impossible (%s) : résumé local", e)
-        if not summary:
+        if not isinstance(summary, str) or not summary.strip():
             part = Conversation(id=conv.id, created=old[0]["ts"], updated=old[-1]["ts"], brain=conv.brain,
                                 title=conv.title, speakers=conv.speakers, transcript=old)
             summary = part.summary(requests=10)
-        conv.transcript = [{"role": "summary", "text": summary.strip(), "speaker": None, "ts": old[0]["ts"]},
+        async with lock or nullcontext():
+            return self._apply_summary(conv_id, old, summary.strip())
+
+    def _apply_summary(self, conv_id: str, old: list[dict[str, Any]], summary: str) -> bool:
+        """Remplace ``old``, début de ``conv_id``, par ``summary`` s'il y est toujours tel quel."""
+        current = self.is_current(conv_id)
+        conv = self.current if current else self.load(conv_id)
+        cut = len(old)
+        if conv is None or len(conv.transcript) < cut or not all(map(_same, conv.transcript[:cut], old)):
+            log.info("Conversation %s modifiée pendant son résumé : compression reportée", conv_id)
+            return False
+        conv.transcript = [{"role": "summary", "text": summary, "speaker": None, "ts": old[0]["ts"]},
                            *conv.transcript[cut:]]
-        log.info("Conversation « %s » compressée : %d messages résumés", conv.title, len(old))
+        log.info("Conversation « %s » compressée : %d messages résumés", conv.title, cut)
         if current:
             self.brain.set_state({"messages": transcript_messages(conv.transcript)})
             self.save()
@@ -526,23 +715,19 @@ def _exchanges(transcript: list[dict[str, Any]]) -> list[tuple[str, str]]:
                 out.append(("\n".join(user), "\n".join(reply)))
                 user, reply = [], []
             if m["text"] is not None:
-                user.append(f"[locuteur : {m.get('speaker') or 'inconnu'}]\n{m['text']}")
+                user.append(f"[locuteur : {neutralize(m.get('speaker') or 'inconnu')}]\n{neutralize(m['text'])}")
         elif m["role"] == "assistant":
             reply.append(m["text"])
     return out
 
 
 def load_conversations(folder: str | Path) -> list[Conversation]:
-    """Conversations enregistrées dans ``folder``, la plus récente d'abord (sans l'état du cerveau)."""
+    """Conversations enregistrées dans ``folder``, la plus récente d'abord (sans l'état du cerveau).
+
+    L'identifiant de chacune est le nom de son fichier ; les fichiers illisibles sont ignorés.
+    """
     folder = Path(folder).expanduser()
-    convs = []
-    for path in folder.glob("*.json") if folder.is_dir() else []:
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            data["state"] = {}
-            convs.append(Conversation(**data))
-        except (OSError, json.JSONDecodeError, TypeError):
-            log.warning("Conversation illisible : %s", path)
+    convs = [c for path in (folder.glob("*.json") if folder.is_dir() else []) if (c := _read(path, path.stem))]
     return sorted(convs, key=lambda c: c.updated, reverse=True)
 
 
@@ -552,9 +737,9 @@ def transcript_messages(transcript: list[dict[str, Any]]) -> list[dict[str, Any]
     for m in transcript:
         role = "user" if m["role"] in ("user", "summary") else "assistant"
         if m["role"] == "summary":
-            text = f"[note : résumé des échanges précédents]\n{m['text']}"
-        elif role == "user":
-            text = f"[locuteur : {m.get('speaker') or 'inconnu'}]\n{m['text']}"
+            text = f"[note : résumé des échanges précédents]\n{neutralize(m['text'])}"
+        elif role == "user":   # crochets neutralisés comme à la première écoute (brain.prompts.user_message)
+            text = f"[locuteur : {neutralize(m.get('speaker') or 'inconnu')}]\n{neutralize(m['text'])}"
         else:
             text = m["text"]
         if messages and messages[-1]["role"] == role:

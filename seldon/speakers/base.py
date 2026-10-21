@@ -31,6 +31,18 @@ class SpeakerIdentifier(ABC):
         """Noms des voix enregistrées."""
         return []
 
+    def canonical_name(self, name: str) -> str:
+        """Nom sous lequel ``name`` est (ou serait) enregistré, tel que l'identification le rendra.
+
+        Une voix déjà enregistrée sous une autre casse garde son nom. ValueError si ``name``
+        est inutilisable (vide, trop long…).
+        """
+        name = " ".join(str(name).split())
+        if not name:
+            raise ValueError("Nom de locuteur vide")
+        key = name.casefold()
+        return next((k for k in self.known_speakers() if k.casefold() == key), name)
+
     def forget(self, name: str) -> bool:
         """Supprime la voix ``name`` ; faux si elle n'existe pas."""
         raise NotImplementedError

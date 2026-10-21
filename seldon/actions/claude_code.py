@@ -9,6 +9,14 @@ bloque donc jamais en attente d'une réponse.
 Une tâche longue peut tourner en arrière-plan : Seldon annonce le résultat
 à voix haute à la fin (événement ``claude_code.done`` émis également).
 
+Sécurité (la tâche et le répertoire viennent du cerveau, donc de ce qu'il a
+entendu) : le répertoire doit être sous ``allowed_dirs`` (défaut : ``cwd``) —
+``claude -p`` ne demande pas si l'on fait confiance au dossier et appliquerait
+les réglages (hooks…) d'un projet quelconque ; la tâche ne peut pas être lue
+comme une option de la ligne de commande ; ``bypassPermissions`` impose une
+confirmation ; ``allowed_speakers`` ne tient pas compte de la casse, comme les
+administrateurs du terminal.
+
 Exemple ``config.yaml`` :
 
     actions:
@@ -26,6 +34,7 @@ import json
 import logging
 import os
 import signal
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +48,20 @@ SPOKEN_SUMMARY = (
     "Tu es appelé par un assistant vocal. Termine toujours par un résumé de une à "
     "deux phrases en français, sans markdown ni code, adapté à la lecture à voix haute."
 )
+
+PERMISSION_MODES = {"acceptEdits", "auto", "bypassPermissions", "default", "dontAsk", "manual", "plan"}
+STDERR_BYTES = 64_000   # erreurs gardées (la fin sert au message)
+
+
+async def _read(stream: asyncio.StreamReader, limit: int) -> tuple[bytes, bool]:
+    """Lit ``stream`` jusqu'au bout en ne gardant que ``limit`` octets : (données, tronquées ?)."""
+    chunks: list[bytes] = []
+    size = 0
+    while chunk := await stream.read(1 << 16):
+        if size < limit:
+            chunks.append(chunk[: limit - size])
+        size += len(chunk)
+    return b"".join(chunks), size > limit
 
 
 @register("actions", "claude_code")
@@ -60,27 +83,36 @@ class ClaudeCode(Action):
         self,
         claude_bin: str = "claude",
         cwd: str | None = None,
-        permission_mode: str = "acceptEdits",   # acceptEdits | auto | plan | dontAsk | bypassPermissions
+        permission_mode: str = "acceptEdits",   # acceptEdits | auto | plan | dontAsk | manual | bypassPermissions
         allowed_tools: list[str] | None = None,
         model: str | None = None,
         max_budget_usd: float | None = None,
         timeout: float = 1800.0,
-        confirm: bool = True,                    # validation humaine avant de lancer
+        confirm: bool = True,                    # validation humaine avant de lancer (toujours si bypassPermissions)
         allowed_speakers: list[str] | None = None,
         max_result_chars: int = 4000,
         announce_chars: int = 400,               # longueur max annoncée à voix haute (arrière-plan)
+        allowed_dirs: list[str] | None = None,   # répertoires permis (et leurs sous-dossiers) ; None = cwd
+        max_output_bytes: int = 10_000_000,      # sortie de Claude Code au-delà : refusée
     ) -> None:
+        if permission_mode not in PERMISSION_MODES:
+            raise ValueError(f"permission_mode inconnu : {permission_mode!r} ({', '.join(sorted(PERMISSION_MODES))})")
         self.claude_bin = claude_bin
-        self.cwd = Path(cwd or "~").expanduser()
+        self.cwd = Path(cwd or "~").expanduser().resolve()
         self.permission_mode = permission_mode
         self.allowed_tools = allowed_tools
         self.model = model
         self.max_budget_usd = max_budget_usd
         self.timeout = timeout
-        self.confirm = confirm
-        self.allowed_speakers = None if allowed_speakers is None else set(allowed_speakers)
+        # sans aucune vérification de permission, rien ne part sans un humain
+        self.confirm = confirm or permission_mode == "bypassPermissions"
+        if permission_mode == "bypassPermissions" and not confirm:
+            log.warning("claude_code : permission_mode bypassPermissions, confirmation imposée")
+        self.allowed_speakers = None if allowed_speakers is None else {s.casefold() for s in allowed_speakers}
         self.max_result_chars = max_result_chars
         self.announce_chars = announce_chars
+        self.allowed_dirs = [self.cwd] if allowed_dirs is None else [Path(d).expanduser().resolve() for d in allowed_dirs]
+        self.max_output_bytes = max_output_bytes
         self._sessions: dict[Path, str] = {}       # dernier session_id par répertoire
         self._tasks: set[asyncio.Task] = set()
 
@@ -103,7 +135,9 @@ class ClaudeCode(Action):
 
     def _command(self, task: str, session: str | None) -> list[str]:
         cmd = [
-            self.claude_bin, "-p", task,
+            self.claude_bin, "-p",
+            # préfixe : la tâche n'est jamais lue comme une option (« --… ») ni une sous-commande (« update »)
+            f"Tâche : {task}",
             "--output-format", "json",
             "--permission-mode", self.permission_mode,
             "--permission-prompts", "none",
@@ -119,17 +153,31 @@ class ClaudeCode(Action):
             cmd += ["--allowed-tools", *self.allowed_tools]
         return cmd
 
+    def _workdir(self, requested: Any) -> Path | str:
+        """Répertoire de travail (un relatif l'est par rapport à ``cwd``), ou message d'erreur."""
+        try:
+            path = Path(str(requested)).expanduser() if requested else self.cwd
+            path = (self.cwd / path if not path.is_absolute() else path).resolve()
+        except (OSError, ValueError, RuntimeError):
+            return f"Répertoire invalide : {str(requested)[:200]}"
+        if not path.is_dir():
+            return f"Répertoire introuvable : {path}"
+        if not any(path.is_relative_to(d) for d in self.allowed_dirs):
+            return (f"Répertoire non autorisé : {path}. Autorisés : "
+                    + ", ".join(str(d) for d in self.allowed_dirs) + " (et leurs sous-dossiers).")
+        return path
+
     async def run(self, params: dict[str, Any], ctx: ActionContext) -> ActionResult:
-        task = str(params.get("task", "")).strip()
+        task = str(params.get("task") or "").strip()
         if not task:
             return ActionResult.error("Tâche vide.")
         speaker = ctx.utterance.speaker if ctx.utterance else None
-        if self.allowed_speakers is not None and speaker not in self.allowed_speakers:
+        if self.allowed_speakers is not None and (speaker is None or speaker.casefold() not in self.allowed_speakers):
             return ActionResult.error(f"Refusé : {speaker or 'un locuteur non identifié'} n'est pas autorisé à utiliser Claude Code.")
 
-        cwd = Path(params.get("cwd") or self.cwd).expanduser()
-        if not cwd.is_dir():
-            return ActionResult.error(f"Répertoire introuvable : {cwd}")
+        cwd = self._workdir(params.get("cwd"))
+        if isinstance(cwd, str):
+            return ActionResult.error(cwd)
         session = self._sessions.get(cwd) if params.get("resume") else None
 
         if self.confirm and not await ctx.confirm(f"Lancer Claude Code dans {cwd} ? Tâche : « {task} »"):
@@ -143,22 +191,32 @@ class ClaudeCode(Action):
         return await self._execute(task, cwd, session)
 
     async def _background(self, task: str, cwd: Path, session: str | None, ctx: ActionContext) -> None:
-        result = await self._execute(task, cwd, session)
-        events = ctx.services.get("events")
-        if events is not None:
-            await events.emit("claude_code.done", task=task, result=result)
-        summary = result.text.split("\n\n", 1)[-1] if not result.is_error else result.text
-        message = ("Claude Code a terminé. " if not result.is_error else "Claude Code a échoué. ") + summary
-        tts, stt = ctx.services.get("tts"), ctx.services.get("stt")
-        if tts is None:
-            return
-        if stt is not None:
-            stt.pause()
         try:
-            await tts.speak(message[: self.announce_chars])
-        finally:
-            if stt is not None:
-                stt.resume()
+            result = await self._execute(task, cwd, session)
+        except Exception as e:
+            log.exception("Claude Code (arrière-plan) a échoué")
+            result = ActionResult.error(f"Claude Code a échoué : {e}")
+        try:
+            events = ctx.services.get("events")
+            if events is not None:
+                await events.emit("claude_code.done", task=task, result=result)
+            summary = result.text.split("\n\n", 1)[-1] if not result.is_error else result.text
+            message = ("Claude Code a terminé. " if not result.is_error else "Claude Code a échoué. ") + summary
+            tts, stt = ctx.services.get("tts"), ctx.services.get("stt")
+            if tts is None:
+                return
+            # Verrou du pipeline s'il est publié (services["busy"]) : l'annonce ne coupe pas un échange
+            # en cours, et l'écoute n'est pas rétablie pendant qu'il parle.
+            async with ctx.services.get("busy") or nullcontext():
+                if stt is not None:
+                    stt.pause()
+                try:
+                    await tts.speak(message[: self.announce_chars])
+                finally:
+                    if stt is not None:
+                        stt.resume()
+        except Exception as e:
+            log.warning("Résultat de Claude Code non annoncé : %s", e)
 
     async def _execute(self, task: str, cwd: Path, session: str | None) -> ActionResult:
         try:
@@ -172,8 +230,12 @@ class ClaudeCode(Action):
             )
         except FileNotFoundError:
             return ActionResult.error(f"Commande « {self.claude_bin} » introuvable : Claude Code est-il installé ?")
+        except OSError as e:
+            return ActionResult.error(f"Claude Code n'a pas pu être lancé : {e}")
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), self.timeout)
+            (stdout, too_long), (stderr, _), _ = await asyncio.wait_for(asyncio.gather(
+                _read(proc.stdout, self.max_output_bytes), _read(proc.stderr, STDERR_BYTES), proc.wait(),
+            ), self.timeout)
         except (asyncio.TimeoutError, asyncio.CancelledError) as e:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
@@ -184,22 +246,27 @@ class ClaudeCode(Action):
                 raise
             return ActionResult.error(f"Claude Code interrompu après {self.timeout:g} s.")
 
+        if too_long:
+            return ActionResult.error(f"Sortie de Claude Code trop volumineuse (plus de {self.max_output_bytes} octets).")
         try:
             data = json.loads(stdout)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            data = None
+        if not isinstance(data, dict):
             detail = (stderr or stdout).decode(errors="replace").strip()[-500:]
             return ActionResult.error(f"Claude Code a échoué (code {proc.returncode}) : {detail}")
 
-        if data.get("session_id"):
+        if isinstance(data.get("session_id"), str):
             self._sessions[cwd] = data["session_id"]
         text = str(data.get("result") or "")
         if len(text) > self.max_result_chars:
             text = "[début tronqué]\n" + text[-self.max_result_chars:]
         info = [f"Répertoire : {cwd}", f"tours : {data.get('num_turns', '?')}"]
-        if data.get("total_cost_usd") is not None:
-            info.append(f"coût : {data['total_cost_usd']:.2f} $")
+        cost = data.get("total_cost_usd")
+        if isinstance(cost, (int, float)):
+            info.append(f"coût : {cost:.2f} $")
         denials = data.get("permission_denials") or []
-        if denials:
-            names = sorted({d.get("tool_name", "?") for d in denials})
+        if isinstance(denials, list) and denials:
+            names = sorted({str(d.get("tool_name", "?")) if isinstance(d, dict) else "?" for d in denials})
             info.append(f"permissions refusées : {', '.join(names)}")
         return ActionResult(text=" | ".join(info) + "\n\n" + text, is_error=bool(data.get("is_error")))

@@ -28,22 +28,26 @@ class Speak(Action):
     }
 
     async def run(self, params: dict[str, Any], ctx: ActionContext) -> ActionResult:
+        text = params.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return ActionResult.error("Paramètre `text` manquant ou vide : rien n'a été dit.")
         tts = ctx.services.get("tts")
         if tts is None:
             return ActionResult.error("Aucun moteur TTS configuré.")
         stt = ctx.services.get("stt")
         if stt is None:
-            await tts.speak(params["text"])
+            await tts.speak(text)
             return ActionResult(text="Prononcé.")
 
         stt.pause()  # évite que l'assistant s'entende lui-même...
-        speaking = asyncio.create_task(tts.speak(params["text"]))
-        listening = asyncio.create_task(stt.interruption(params["text"]))   # ...sauf pour se faire couper
+        speaking = asyncio.create_task(tts.speak(text))
+        listening = asyncio.create_task(stt.interruption(text))   # ...sauf pour se faire couper
         try:
             await asyncio.wait({speaking, listening}, return_when=asyncio.FIRST_COMPLETED)
-            if listening.done() and listening.exception() is not None:
+            heard = listening.done() and not listening.cancelled()
+            if heard and listening.exception() is not None:
                 log.warning("Écoute des interruptions échouée : %s", listening.exception())
-            elif listening.done() and not speaking.done():
+            elif heard and not speaking.done():
                 await tts.stop()
                 await speaking
                 return ActionResult(
@@ -52,6 +56,16 @@ class Speak(Action):
                 )
             await speaking
         finally:
-            listening.cancel()
-            stt.resume()
+            try:
+                listening.cancel()
+                if not speaking.done():   # Speak annulé (arrêt de Seldon…) : il se tait
+                    speaking.cancel()
+                    try:
+                        await tts.stop()
+                    except Exception as e:
+                        log.warning("Arrêt de la synthèse vocale impossible : %s", e)
+                # attend la fin des deux tâches (et récupère leurs exceptions) avant de réécouter
+                await asyncio.gather(speaking, listening, return_exceptions=True)
+            finally:
+                stt.resume()
         return ActionResult(text="Prononcé.")

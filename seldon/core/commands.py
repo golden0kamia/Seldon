@@ -15,7 +15,10 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Awaitable, Callable
 
+from seldon.core.memory import _words
+
 if TYPE_CHECKING:
+    from seldon.core.memory import Conversation
     from seldon.core.pipeline import Assistant
 
 Handler = Callable[["Assistant", str], Awaitable[str | None]]
@@ -70,15 +73,19 @@ async def _new(assistant: Assistant, args: str) -> str | None:
     return "Nouvelle conversation."
 
 
-_listing: list[str] = []   # identifiants du dernier affichage de /conversations
+def _pick(assistant: Assistant, args: str) -> Conversation | None:
+    """Conversation désignée par un numéro de la dernière liste (/conversations) ou par des mots-clés.
 
-
-def _pick(assistant: Assistant, args: str):
-    """Conversation désignée par un numéro de la dernière liste ou par des mots-clés."""
+    Un numéro absent de la liste, ou des mots sans rien de significatif, ne désignent
+    rien (et surtout pas « la plus récente »).
+    """
     memory = assistant.memory
-    if args.isdigit() and 0 < int(args) <= len(_listing):
-        return memory.load(_listing[int(args) - 1])
-    found = memory.search(args, limit=1) if args else []
+    if memory is None:
+        return None
+    if args.isdecimal():
+        n = int(args) if len(args) < 6 else 0
+        return memory.load(memory.listing[n - 1]) if 0 < n <= len(memory.listing) else None
+    found = memory.search(args, limit=1) if _words(args) else []
     return memory.load(found[0].id) if found else None
 
 
@@ -87,7 +94,7 @@ async def _conversations(assistant: Assistant, args: str) -> str | None:
     if assistant.memory is None:
         return "La mémoire des conversations est désactivée."
     found = assistant.memory.search(args, limit=15)
-    _listing[:] = [c.id for c in found]
+    assistant.memory.listing = [c.id for c in found]
     current = assistant.memory.current.id if assistant.memory.current else None
     if not found:
         return "Aucune conversation trouvée."
@@ -103,9 +110,10 @@ async def _resume(assistant: Assistant, args: str) -> str | None:
     conv = _pick(assistant, args)
     if conv is None:
         return "Je n'ai pas trouvé cette conversation. Tape /conversations pour la liste."
-    assistant.memory.resume(conv.id)
+    if assistant.memory.resume(conv.id) is None:
+        return "Je n'ai pas pu reprendre cette conversation."
     last = next((m["text"] for m in reversed(conv.transcript) if m["role"] == "user"), "")
-    return f"On reprend « {conv.title} ». Ta dernière question était : {last}"
+    return f"On reprend « {conv.title or 'sans titre'} ». Ta dernière question était : {last}"
 
 
 @command("supprimer", help="Supprime une conversation (/supprimer N ou mots-clés)")
@@ -113,7 +121,8 @@ async def _delete(assistant: Assistant, args: str) -> str | None:
     if assistant.memory is None or not args:
         return "Précise la conversation : /supprimer N."
     conv = _pick(assistant, args)
-    if conv is None or not await assistant.confirm(f"Supprimer « {conv.title} » ?"):
+    # date, participants et nombre de messages : de quoi vérifier que c'est la bonne
+    if conv is None or not await assistant.confirm(f"Supprimer la conversation {conv.describe()} ?"):
         return "Rien n'a été supprimé."
     assistant.memory.delete(conv.id)
     return "Conversation supprimée."

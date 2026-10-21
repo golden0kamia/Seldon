@@ -12,11 +12,17 @@ Exemple ``config.yaml`` :
           devices:                  # facultatif : plusieurs caméras nommées
             bureau: 0
             porte: {device: /dev/video2, width: 1920, height: 1080}
+
+Les photos enregistrées (``save_dir``) sont privées (0o600) et ne s'écrasent jamais.
 """
 
 from __future__ import annotations
 
 import asyncio
+import itertools
+import logging
+import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -24,7 +30,23 @@ from typing import Any
 
 from seldon.actions.base import Action
 from seldon.core.registry import register
+from seldon.core.storage import private_dir
 from seldon.core.types import ActionContext, ActionResult, Image
+
+log = logging.getLogger(__name__)
+
+
+def _spec(defaults: dict[str, Any], spec: Any) -> dict[str, Any]:
+    """Réglages complets d'une caméra ; ValueError si la configuration est invalide."""
+    out = {**defaults, **(spec if isinstance(spec, dict) else {"device": spec})}
+    if isinstance(out["device"], str) and out["device"].strip().isdecimal():
+        out["device"] = int(out["device"])   # « 0 » : index, pas un nom de fichier
+    for key in ("width", "height"):
+        if out.get(key) is not None:
+            out[key] = int(out[key])
+            if out[key] <= 0:
+                raise ValueError(f"Caméra : {key} doit être positif")
+    return out
 
 
 @register("actions", "camera")
@@ -48,22 +70,22 @@ class Camera(Action):
         save_dir: str | None = None,
         devices: dict[str, Any] | None = None,
         keep_open: bool = False,
+        timeout: float = 20.0,   # capture plus longue (caméra bloquée) : abandonnée
     ) -> None:
         defaults = {"device": device, "width": width, "height": height}
         named = devices or {"default": device}
         # nom -> réglages complets ({device, width, height})
-        self.devices: dict[str, dict[str, Any]] = {
-            name: {**defaults, **(spec if isinstance(spec, dict) else {"device": spec})}
-            for name, spec in named.items()
-        }
+        self.devices: dict[str, dict[str, Any]] = {str(name): _spec(defaults, spec) for name, spec in named.items()}
         self.default = next(iter(self.devices))
-        self.jpeg_quality = jpeg_quality
-        self.max_dimension = max_dimension
-        self.warmup_frames = warmup_frames
+        self.jpeg_quality = min(100, max(1, int(jpeg_quality)))
+        self.max_dimension = int(max_dimension)
+        self.warmup_frames = max(0, int(warmup_frames))
         self.save_dir = Path(save_dir).expanduser() if save_dir else None
         self.keep_open = keep_open
+        self.timeout = timeout
         self._captures: dict[str, Any] = {}   # caméras ouvertes si keep_open
         self._lock = threading.Lock()
+        self._closed = False   # après stop() : plus aucune caméra gardée ouverte
 
     @property
     def input_schema(self) -> dict[str, Any]:  # type: ignore[override]
@@ -76,21 +98,30 @@ class Camera(Action):
             }
         return {"type": "object", "properties": props, "additionalProperties": False}
 
+    async def start(self) -> None:
+        self._closed = False
+
     async def run(self, params: dict[str, Any], ctx: ActionContext) -> ActionResult:
         name = params.get("camera") or self.default
-        if name not in self.devices:
-            return ActionResult.error(f"Caméra inconnue : {name}. Disponibles : {', '.join(self.devices)}")
+        if not isinstance(name, str) or name not in self.devices:
+            return ActionResult.error(f"Caméra inconnue : {str(name)[:40]}. Disponibles : {', '.join(self.devices)}")
         try:
-            jpeg, (w, h) = await asyncio.to_thread(self._capture, name)
+            jpeg, (w, h) = await asyncio.wait_for(asyncio.to_thread(self._capture, name), self.timeout)
         except RuntimeError as e:
             return ActionResult.error(str(e))
+        except asyncio.TimeoutError:
+            return ActionResult.error(f"La caméra « {name} » ne répond pas (plus de {self.timeout:g} s).")
 
-        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        text = f"Image capturée ({name}) le {stamp}, {w}x{h} px."
+        now = time.localtime()
+        text = f"Image capturée ({name}) le {time.strftime('%Y-%m-%d %H:%M:%S', now)}, {w}x{h} px."
         if self.save_dir:
-            path = self.save_dir / f"{name}_{time.strftime('%Y%m%d_%H%M%S')}.jpg"
-            await asyncio.to_thread(self._save, path, jpeg)
-            text += f" Enregistrée dans {path}."
+            stem = re.sub(r"[^\w-]+", "_", name) + time.strftime("_%Y%m%d_%H%M%S", now)
+            try:
+                path = await asyncio.to_thread(self._save, self.save_dir, stem, jpeg)
+                text += f" Enregistrée dans {path}."
+            except OSError as e:   # l'image reste utilisable même si l'enregistrement échoue
+                log.warning("Photo non enregistrée dans %s : %s", self.save_dir, e)
+                text += " (Enregistrement impossible.)"
         return ActionResult(text=text, images=[Image(data=jpeg, media_type="image/jpeg")])
 
     # --- partie bloquante (exécutée dans un thread) ---
@@ -100,20 +131,25 @@ class Camera(Action):
 
         spec = self.devices[name]
         cap = cv2.VideoCapture(spec["device"])
-        if not cap.isOpened():
+        try:
+            if not cap.isOpened():
+                raise RuntimeError(f"Impossible d'ouvrir la caméra « {name} » ({spec['device']}) : "
+                                   "aucune caméra détectée ou périphérique occupé.")
+            if spec.get("width"):
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, spec["width"])
+            if spec.get("height"):
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, spec["height"])
+        except BaseException:
             cap.release()
-            raise RuntimeError(f"Impossible d'ouvrir la caméra « {name} » ({spec['device']}) : "
-                               "aucune caméra détectée ou périphérique occupé.")
-        if spec.get("width"):
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, spec["width"])
-        if spec.get("height"):
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, spec["height"])
+            raise
         return cap
 
     def _capture(self, name: str) -> tuple[bytes, tuple[int, int]]:
         import cv2
 
-        with self._lock:
+        if not self._lock.acquire(timeout=self.timeout):
+            raise RuntimeError("La caméra est occupée par une autre capture.")
+        try:
             cap = self._captures.pop(name, None) or self._open(name)
             ok, frame = False, None
             try:
@@ -122,10 +158,12 @@ class Camera(Action):
                     cap.grab()
                 ok, frame = cap.read()
             finally:
-                if self.keep_open and ok:
+                if self.keep_open and ok and not self._closed:
                     self._captures[name] = cap
                 else:
                     cap.release()
+        finally:
+            self._lock.release()
         if not ok or frame is None:
             raise RuntimeError(f"La caméra « {name} » n'a renvoyé aucune image.")
 
@@ -140,12 +178,33 @@ class Camera(Action):
         return buf.tobytes(), (w, h)
 
     @staticmethod
-    def _save(path: Path, data: bytes) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
+    def _save(folder: Path, stem: str, data: bytes) -> Path:
+        """Enregistre la photo (0o600) sous un nom libre : ``stem.jpg``, ``stem_2.jpg``…"""
+        private_dir(folder)
+        for n in itertools.count(1):
+            path = folder / (f"{stem}.jpg" if n == 1 else f"{stem}_{n}.jpg")
+            try:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                continue
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(data)
+            except BaseException:
+                path.unlink(missing_ok=True)
+                raise
+            return path
+        raise AssertionError("inaccessible")
+
+    def _release_all(self) -> None:
+        locked = self._lock.acquire(timeout=self.timeout)   # attend la fin d'une capture en cours
+        try:
+            self._closed = True
+            while self._captures:
+                self._captures.popitem()[1].release()
+        finally:
+            if locked:
+                self._lock.release()
 
     async def stop(self) -> None:
-        with self._lock:
-            for cap in self._captures.values():
-                cap.release()
-            self._captures.clear()
+        await asyncio.to_thread(self._release_all)   # sans bloquer la boucle pendant une capture
