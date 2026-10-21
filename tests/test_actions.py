@@ -104,7 +104,7 @@ async def test_truncation():
 
 @pytest.mark.parametrize("cmd,auto", [
     ("ls -la", True),
-    ("FOO=1 date | wc -l", True),
+    ("LC_ALL=C date | wc -l", True),   # variable inoffensive ; FOO=1 devant : voir test_terminal_security
     ("ls && rm fichier", False),       # rm hors liste
     ("echo $(rm x)", False),           # substitution de commande
     ("echo x > fichier", False),       # redirection

@@ -152,7 +152,36 @@ Commandes terminal (`mode: allowlist`), classées en trois niveaux :
 
 Les commandes dangereuses (`rm -rf /`, `mkfs`…) sont toujours refusées, et
 `allowed_speakers` restreint les commandes standard et sévères (les bénignes
-restent ouvertes à tous). Voir `config.yaml`.
+restent ouvertes à tous ; la casse des noms est ignorée). Voir `config.yaml`.
+
+Le modèle peut être manipulé (sortie d'une commande précédente, fichier lu,
+autre voix dans la pièce) ; la classification ne se fie donc qu'à la ligne
+elle-même :
+
+- une commande n'est bénigne que si chaque option est sans effet : `env -S…`,
+  `sort --compress-program`, `tree -o`, `ss -K`, `git -c…`, `git branch -m`,
+  une variable placée devant (`GIT_EXTERNAL_DIFF=… git diff`, `PATH=… ls` ;
+  seules `LC_*`, `LANG`, `TZ`… sont admises) ou un programme hors des
+  dossiers système (`./ls`) la rendent au moins standard ;
+- est **sévère** toute commande dont l'effet ne se lit pas dans la ligne : code
+  en ligne (`bash -c`, `python -c`, `perl -e`, `sed …e`), lanceurs (`xargs`,
+  `nohup`, `timeout`, `env CMD`, `find -exec`), substitutions (`$(…)`,
+  `` `…` ``), noms masqués (`"r"m`, `$X`, `/???/r?`, `{rm,-rf,x}`), alias ou
+  pager git, ou écriture dans un fichier lancé automatiquement (`.bashrc`,
+  `authorized_keys`, `.git/hooks`, crontab) ;
+- lire un secret (`~/.ssh/`, `.env`, `~/.aws/`, `/etc/shadow`,
+  `/proc/*/environ`, `ps e`…, motifs `sensitive` / `extra_sensitive`) est
+  sévère : n'importe quelle voix pourrait le demander, et avec un cerveau
+  distant il quitterait la machine ;
+- les commandes tournent sans les variables secrètes de Seldon (`hidden_env` :
+  clés d'API, jetons, `BASH_ENV`…) ; l'agent SSH reste disponible ;
+- la sortie est lue par morceaux : au-delà de `max_read_bytes` (16 Mo) la
+  commande est arrêtée (`cat /dev/zero`), et un délai dépassé renvoie la
+  sortie obtenue jusque-là.
+
+L'analyse reste statique : pour un admin, une commande standard (`make`,
+`python script.py`…) s'exécute sans confirmation ; `mode: confirm` fait tout
+valider.
 
 ### Voix inconnues
 
