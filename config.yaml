@@ -63,6 +63,7 @@ actions:
   - speak
   - conversations         # retrouver / reprendre une conversation passée à la voix
   - voix                  # demande son nom à une voix inconnue et l'enregistre
+  - controle              # « coupe ton micro », « arrête-toi » : Seldon agit sur son propre état
   - engine: terminal
     options:
       mode: allowlist     # niveaux bénigne / standard / sévère ; sinon confirm | auto

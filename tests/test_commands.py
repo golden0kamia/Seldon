@@ -49,6 +49,7 @@ def assistant(lines, **kw):
 @pytest.mark.parametrize("text,name", [
     ("exit", "exit"), ("/exit", "exit"), ("  Quitter. ", "exit"), ("QUIT!", "exit"),
     ("/reset", "nouvelle"), ("Oublie tout", "nouvelle"), ("aide", "help"), ("/actions", "actions"),
+    ("/muet", "muet"), ("Coupe le micro !", "muet"),
 ])
 def test_match(text, name):
     assert match(text)[0].aliases[0] == name
@@ -81,3 +82,35 @@ async def test_commands_can_be_disabled():
     a, brain, _ = assistant(["exit", "suite"], enable_commands=False)
     await a.run()
     assert brain.seen == ["exit", "suite"]
+
+
+class MutableSTT(ScriptedSTT):
+    muted = False
+
+    def mute(self, on):
+        self.muted = on
+
+
+async def test_mute_command_skips_brain():
+    brain, tts, stt = EchoBrain(), RecordingTTS(), MutableSTT(["Coupe ton micro."])
+    await Assistant(stt, NoSpeakerId(), brain, tts, [Speak()]).run()
+    assert stt.muted and brain.seen == [] and "Micro coupé" in tts.said[0]
+
+
+class ControlBrain(EchoBrain):
+    """Appelle l'action controle_seldon avec l'opération dite (« fais quitter »), puis répond."""
+
+    async def handle(self, utterance, actions, execute):
+        self.seen.append(utterance.text)
+        result = await execute("controle_seldon", {"operation": utterance.text.removeprefix("fais ")})
+        return result.text
+
+
+async def test_control_action_mutes_and_quits():
+    from seldon.actions.control import Control
+
+    brain, tts, stt = ControlBrain(), RecordingTTS(), MutableSTT(["fais couper_micro", "fais quitter", "jamais traité"])
+    await Assistant(stt, NoSpeakerId(), brain, tts, [Speak(), Control()]).run()
+    assert stt.muted
+    assert brain.seen == ["fais couper_micro", "fais quitter"]
+    assert "après ta réponse" in tts.said[-1]

@@ -54,6 +54,7 @@ _BUILTINS: dict[str, dict[str, str]] = {
         "feishin": "seldon.actions.feishin",
         "home_assistant": "seldon.actions.home_assistant",
         "desktop": "seldon.actions.desktop",
+        "controle": "seldon.actions.control",
     },
 }
 

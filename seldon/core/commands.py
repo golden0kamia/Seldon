@@ -63,6 +63,13 @@ async def _exit(assistant: Assistant, args: str) -> str | None:
     return "Au revoir."
 
 
+@command("muet", "mute", "coupe le micro", "coupe ton micro",
+         help="Coupe le micro (rétabli par le bouton Micro du Journal)")
+async def _mute(assistant: Assistant, args: str) -> str | None:
+    assistant.stt.mute(True)
+    return "Micro coupé. Rétablis-le avec le bouton Micro du Journal."
+
+
 @command("nouvelle", "reset", "oublie tout", "nouvelle conversation",
          help="Commence une nouvelle conversation (l'actuelle reste en mémoire)")
 async def _new(assistant: Assistant, args: str) -> str | None:

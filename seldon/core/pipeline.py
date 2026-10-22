@@ -116,6 +116,7 @@ class Assistant:
         self.services: dict[str, Any] = {
             "tts": tts, "stt": stt, "speakers": speakers, "events": self.events, "memory": memory,
             "busy": self._busy,   # verrou d'un échange : une annonce en arrière-plan attend la fin du tour
+            "stop": self.request_stop,   # arrêt de Seldon à la fin du tour (action « controle »)
         }
 
     @classmethod

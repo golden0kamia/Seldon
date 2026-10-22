@@ -97,10 +97,17 @@ python -m pytest                    # tests (sans micro, caméra ni modèle)
 ```
 
 Commandes locales (traitées sans passer par le modèle, au clavier ou à la voix) :
-`exit` / `quitter`, `nouvelle` / `oublie tout`, `conversations [mots-clés]`,
-`reprendre N|mots-clés`, `supprimer N`, `actions`, `aide`. Le « / » initial
-est facultatif (obligatoire pour passer des arguments). Un numéro désigne une
-ligne de la dernière liste affichée par `conversations`.
+`exit` / `quitter`, `muet` / `coupe le micro`, `nouvelle` / `oublie tout`,
+`conversations [mots-clés]`, `reprendre N|mots-clés`, `supprimer N`, `actions`,
+`aide`. Le « / » initial est facultatif (obligatoire pour passer des arguments).
+Un numéro désigne une ligne de la dernière liste affichée par `conversations`.
+
+Ces commandes demandent la phrase exacte. Avec l'action `controle` (dans
+`actions:`), on peut aussi le demander librement (« tu peux couper ton micro ? »,
+« éteins-toi, Seldon ») : le cerveau coupe le micro ou arrête Seldon après sa
+réponse. Un simple « stop » ou « tais-toi » ne fait que l'interrompre. Le micro
+coupé ne se rétablit qu'avec le bouton **🎙 Micro** du Journal, puisque plus
+rien n'est entendu.
 
 La configuration est vérifiée au lancement : une option qui attend un nombre
 ou `true` / `false` refuse `"700ms"` ou `"non"`, et une clé mal orthographiée
