@@ -367,7 +367,16 @@ class Feishin(Action):
         self.mpris = Mpris(mpris_name, self.timeout)
 
     def acknowledge(self, params: dict[str, Any]) -> str | None:
-        return "Je lance ça." if params.get("command") == "play_media" else None
+        if params.get("command") != "play_media":
+            return None
+        query = " ".join(str(params.get("query") or "").split())
+        what = {"album": "l'album", "playlist": "la playlist"}.get(str(params.get("kind")), "")
+        if query and len(query) <= 50:
+            target = f"{what} {query}".strip()
+            if params.get("play_mode") in ("next", "last"):
+                return self.vary((f"J'ajoute {target} à la file.", f"{target[0].upper()}{target[1:]} arrive dans la file."))
+            return self.vary((f"Je lance {target}.", f"C'est parti pour {target}.", f"Je mets {target}."))
+        return self.vary(("Je lance ça.", "C'est parti.", "Je mets ça."))
 
     async def run(self, params: dict[str, Any], ctx: ActionContext) -> ActionResult:
         command = params.get("command")

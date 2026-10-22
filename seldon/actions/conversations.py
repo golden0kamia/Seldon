@@ -51,7 +51,14 @@ class Conversations(Action):
         self.tail = tail
 
     def acknowledge(self, params: dict[str, Any]) -> str | None:
-        return "Je cherche dans nos conversations." if params.get("operation") == "chercher" else None
+        if params.get("operation") != "chercher":
+            return None
+        query = " ".join(str(params.get("query") or "").split())
+        if query and len(query) <= 40:
+            return self.vary((f"Je cherche ce qu'on s'est dit à propos de {query}.",
+                              f"Je retrouve nos échanges sur {query}."))
+        return self.vary(("Je cherche dans nos conversations.", "Je fouille dans nos échanges.",
+                          "Je regarde ce qu'on s'est dit."))
 
     async def run(self, params: dict[str, Any], ctx: ActionContext) -> ActionResult:
         memory = ctx.services.get("memory")

@@ -17,7 +17,9 @@ puis l'activer dans ``config.yaml`` sous ``actions:``.
 
 from __future__ import annotations
 
+import random
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from typing import Any, ClassVar
 
 from seldon.core.types import ActionContext, ActionResult
@@ -32,7 +34,8 @@ class Action(ABC):
     ends_turn: ClassVar[bool] = False
     # Phrase dite aussitôt l'action demandée (ex. « Compris, je m'en occupe. »), pour
     # que l'utilisateur sache qu'on l'a compris pendant qu'elle s'exécute. None : rien.
-    acknowledgement: ClassVar[str | None] = None
+    # Une liste : une formulation au hasard, jamais deux fois de suite la même.
+    acknowledgement: ClassVar[str | Sequence[str] | None] = None
 
     async def start(self) -> None:
         """Initialisation (ouvrir un périphérique, etc.)."""
@@ -46,7 +49,18 @@ class Action(ABC):
 
     def acknowledge(self, params: dict[str, Any]) -> str | None:
         """Phrase d'accusé de réception pour ces paramètres (défaut : ``acknowledgement``)."""
-        return self.acknowledgement
+        return self.vary(self.acknowledgement)
+
+    def vary(self, phrases: str | Sequence[str] | None) -> str | None:
+        """Une des ``phrases`` au hasard, différente de la dernière dite par cette action."""
+        if phrases is None or isinstance(phrases, str):
+            return phrases
+        last = getattr(self, "_last_ack", None)
+        choices = [p for p in phrases if p != last] or list(phrases)
+        if not choices:
+            return None
+        self._last_ack: str | None = random.choice(choices)
+        return self._last_ack
 
     def tool_definition(self) -> dict[str, Any]:
         """Définition au format outil (nom, description, JSON Schema)."""

@@ -67,7 +67,8 @@ async def _read(stream: asyncio.StreamReader, limit: int) -> tuple[bytes, bool]:
 @register("actions", "claude_code")
 class ClaudeCode(Action):
     name = "claude_code"
-    acknowledgement = "Compris, je transmets à Claude Code."
+    acknowledgement = ("Compris, je transmets à Claude Code.", "Je confie ça à Claude Code.",
+                       "D'accord, Claude Code s'en charge.", "Je passe la main à Claude Code.")
     description = (
         "Délègue une tâche complexe à Claude Code, un agent de programmation autonome qui "
         "travaille dans un répertoire de l'ordinateur : écrire ou modifier du code, déboguer, "
@@ -127,6 +128,14 @@ class ClaudeCode(Action):
         "required": ["task"],
         "additionalProperties": False,
     }
+
+    def acknowledge(self, params: dict[str, Any]) -> str | None:
+        if params.get("background"):
+            return self.vary(("C'est lancé en arrière-plan, je préviendrai quand Claude Code aura fini.",
+                              "Claude Code s'en occupe en arrière-plan, j'annoncerai le résultat."))
+        if params.get("resume"):
+            return self.vary(("Je reprends la tâche avec Claude Code.", "Je relance Claude Code là où il s'était arrêté."))
+        return super().acknowledge(params)
 
     async def stop(self) -> None:
         for task in list(self._tasks):

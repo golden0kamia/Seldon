@@ -343,6 +343,39 @@ def _runs_hidden_code(argv: list[str]) -> bool:
     return False
 
 
+# Accusés de réception selon le programme lancé (premier mot utile de la commande).
+_ACK_KINDS: list[tuple[frozenset[str], tuple[str, ...]]] = [
+    (frozenset({"df", "du", "free", "lsblk", "findmnt"}),
+     ("Je regarde l'espace disponible.", "Je vérifie l'occupation de la machine.")),
+    (frozenset({"ps", "top", "htop", "uptime", "pgrep", "nvidia-smi", "rocm-smi", "sensors", "systemctl",
+                "journalctl", "dmesg", "uname", "lscpu", "lspci", "lsusb", "hostnamectl"}),
+     ("Je jette un œil au système.", "Je vérifie l'état de la machine.", "Je regarde ce qui tourne.")),
+    (frozenset({"ls", "cat", "head", "tail", "less", "tree", "find", "locate", "grep", "rg", "wc", "stat", "file"}),
+     ("Je regarde dans les fichiers.", "Je fouille ça.", "Je jette un œil.", "Je cherche.")),
+    (frozenset({"git"}), ("Je regarde le dépôt.", "Je m'occupe du dépôt.")),
+    (frozenset({"apt", "apt-get", "dnf", "pacman", "flatpak", "snap", "pip", "pipx", "npm", "cargo"}),
+     ("Je m'occupe des paquets.", "Je gère ça côté paquets, un instant.")),
+    (frozenset({"ping", "curl", "wget", "ip", "ss", "nmcli", "dig", "nslookup", "traceroute"}),
+     ("Je vérifie le réseau.", "Je teste la connexion.")),
+    (frozenset({"mv", "cp", "mkdir", "touch", "rm", "ln", "chmod", "chown", "tar", "zip", "unzip"}),
+     ("Je m'occupe des fichiers.", "Je fais la manipulation.", "C'est parti pour les fichiers.")),
+]
+_ACK_DEFAULT = ("Compris, je m'en occupe.", "D'accord, je lance ça.", "Je m'y mets.", "Entendu, un instant.",
+                "Ça marche, je lance la commande.")
+
+
+def _ack_program(command: str) -> str:
+    """Premier programme de ``command`` (sans sudo ni affectations de variables), ou « »."""
+    try:
+        words = shlex.split(_SPLIT.split(command, 1)[0])
+    except ValueError:
+        words = command.split()
+    for word in words:
+        if word not in ("sudo", "env", "time", "nice", "nohup") and not _ASSIGN.match(word):
+            return os.path.basename(word)
+    return ""
+
+
 def _truncate(text: str, max_chars: int, dropped: int = 0) -> str:
     if len(text) <= max_chars and not dropped:
         return text
@@ -355,7 +388,7 @@ def _truncate(text: str, max_chars: int, dropped: int = 0) -> str:
 @register("actions", "terminal")
 class Terminal(Action):
     name = "run_shell_command"
-    acknowledgement = "Compris, je m'en occupe."
+    acknowledgement = _ACK_DEFAULT
     description = (
         "Exécute une commande shell (bash) sur l'ordinateur Linux de l'utilisateur et "
         "renvoie le code de sortie et la sortie (stdout + stderr, éventuellement tronquée). "
@@ -502,6 +535,10 @@ class Terminal(Action):
         if self.mode == "auto" or level == BENIGN:
             return False
         return not self.is_admin(speaker)
+
+    def acknowledge(self, params: dict[str, Any]) -> str | None:
+        prog = _ack_program(str(params.get("command") or ""))
+        return self.vary(next((p for progs, p in _ACK_KINDS if prog in progs), self.acknowledgement))
 
     async def run(self, params: dict[str, Any], ctx: ActionContext) -> ActionResult:
         command = str(params.get("command", "")).strip()

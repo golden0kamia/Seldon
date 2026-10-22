@@ -18,11 +18,15 @@ Le cerveau reçoit « [date | locuteur : X] texte » et décide quelles actions
 lancer. La réponse à l'utilisateur est elle-même une action (`speak`).
 
 Quand une action prend la main (commande terminal, caméra, Claude Code,
-recherche dans les conversations), Seldon prévient aussitôt qu'il a compris
-(« Compris, je m'en occupe. », « Je regarde. »…) pendant qu'elle s'exécute,
-puis donne le résultat. Une seule fois par échange, et pas si le cerveau a
-déjà parlé ; `acknowledge: false` dans `config.yaml` le désactive. Pour une
-nouvelle action : attribut `acknowledgement` (ou méthode `acknowledge(params)`).
+musique, recherche dans les conversations), Seldon prévient aussitôt qu'il a
+compris pendant qu'elle s'exécute, puis donne le résultat. La phrase varie et
+suit la demande : « Je regarde l'espace disponible. » pour un `df`, « Je lance
+l'album Rumours. », « Je cherche ce qu'on s'est dit à propos des vacances. »…,
+jamais deux fois de suite la même. Une seule fois par échange, et pas si le
+cerveau a déjà parlé ; `acknowledge: false` dans `config.yaml` le désactive.
+Pour une nouvelle action : attribut `acknowledgement` (une phrase ou une liste
+de formulations tirées au hasard) ou méthode `acknowledge(params)`, qui peut
+s'appuyer sur `self.vary(phrases)`.
 
 Quand une erreur survient pendant un échange, Seldon le dit à voix haute
 plutôt que de rester muet : modèle de langage injoignable ou trop lent,

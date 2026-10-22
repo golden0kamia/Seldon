@@ -16,7 +16,7 @@ memory:                   # mémoire des conversations (reprise à tout moment)
 commands: true            # commandes locales : exit, reset, actions, aide (taper /aide)
 confirm: console          # validation des actions sensibles : console | always | never
 follow_up_s: 20           # avec mots d'éveil : reste attentif 20 s après chaque échange
-acknowledge: true         # annonce « Compris, je m'en occupe » quand une action est lancée
+acknowledge: true         # annonce qu'une action est lancée (phrase variée, selon la demande)
 
 stt:
   engine: whisper

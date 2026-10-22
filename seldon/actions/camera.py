@@ -52,7 +52,7 @@ def _spec(defaults: dict[str, Any], spec: Any) -> dict[str, Any]:
 @register("actions", "camera")
 class Camera(Action):
     name = "capture_image"
-    acknowledgement = "Je regarde."
+    acknowledgement = ("Je regarde.", "Voyons ça.", "Un instant, je regarde.", "Je jette un œil.")
     description = (
         "Prend une photo avec une caméra branchée à l'ordinateur et te renvoie l'image. "
         "Utilise-la quand l'utilisateur te demande de regarder, de voir ou de décrire "

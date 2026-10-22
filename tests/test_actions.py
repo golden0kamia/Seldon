@@ -304,3 +304,36 @@ def test_camera_module_registered():
 
     assert registry.resolve("actions", "camera") is camera_mod.Camera
     assert registry.resolve("actions", "terminal") is Terminal
+
+
+# --- accusés de réception ---
+
+def test_acknowledgement_varies_without_repeating():
+    t = Terminal()
+    said = [t.acknowledge({"command": "make"}) for _ in range(30)]
+    assert all(a != b for a, b in zip(said, said[1:]))
+    assert len(set(said)) > 1
+
+
+def test_acknowledgement_follows_the_request():
+    from seldon.actions import terminal
+
+    t = Terminal()
+    disk = dict(terminal._ACK_KINDS)[frozenset({"df", "du", "free", "lsblk", "findmnt"})]
+    assert t.acknowledge({"command": "LANG=C sudo df -h | head"}) in disk
+    assert t.acknowledge({"command": "/usr/bin/git status"}) in ("Je regarde le dépôt.", "Je m'occupe du dépôt.")
+    assert t.acknowledge({"command": "\"unbalanced"}) in terminal._ACK_DEFAULT
+
+
+def test_contextual_acknowledgements_of_other_actions():
+    from seldon.actions.claude_code import ClaudeCode
+    from seldon.actions.conversations import Conversations
+    from seldon.actions.feishin import Feishin
+
+    music = Feishin()
+    assert music.acknowledge({"command": "pause"}) is None
+    assert "l'album Rumours" in music.acknowledge({"command": "play_media", "query": "Rumours", "kind": "album"})
+    assert "file" in music.acknowledge({"command": "play_media", "query": "Hey Jude", "play_mode": "next"})
+    assert "arrière-plan" in ClaudeCode().acknowledge({"task": "x", "background": True})
+    assert "vacances" in Conversations().acknowledge({"operation": "chercher", "query": "vacances"})
+    assert Conversations().acknowledge({"operation": "renommer"}) is None
