@@ -6,7 +6,10 @@ seuil d'énergie) et pousse chaque prise de parole terminée dans une file
 asyncio. ``listen()`` transcrit ensuite chaque segment dans un thread.
 
 Avec des mots d'éveil, chaque phrase est marquée ``addressed`` (mot d'éveil
-prononcé ou non) ; c'est le pipeline qui décide d'y répondre.
+prononcé ou non) ; c'est le pipeline qui décide d'y répondre. Les façons dont
+Whisper transcrit le mot d'éveil pour une voix donnée (« Celdon », « Sel don »…)
+s'apprennent avec ``python -m seldon.tools.wakeword`` et sont lues dans
+``wake_variants`` (JSON : mot d'éveil -> variantes).
 
 Coupure de parole (``barge_in``) : pendant que Seldon parle, l'écoute est en
 pause mais le VAD continue sur les sons assez forts (``barge_in_db``). Une
@@ -22,12 +25,14 @@ y compris pendant que Seldon parle, jusqu'à ce qu'il soit rétabli.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import queue
 import re
 import threading
 from collections import deque
+from pathlib import Path
 from typing import Any, AsyncIterator, Callable
 
 import numpy as np
@@ -172,16 +177,36 @@ def contains_phrase(text: str, phrases: list[str]) -> list[str]:
     return [p for p in phrases if f" {' '.join(_normalize(p).replace('-', ' ').split())} " in norm]
 
 
+def words(text: str) -> list[str]:
+    """Mots de ``text``, à la casse, la ponctuation et aux traits d'union près."""
+    return _normalize(text).replace("-", " ").split()
+
+
 def strip_wake_word(text: str, wake_words: list[str]) -> str | None:
     """Renvoie le texte sans le mot d'éveil, ou None s'il n'y en a pas."""
-    norm = _normalize(text)
+    heard = words(text)
     for word in wake_words:
-        w = _normalize(word)
-        if norm == w or norm.startswith(w + " "):
+        w = words(word)
+        if w and heard[: len(w)] == w:
             # Retire le mot d'éveil (et la ponctuation qui le suit) du texte original.
-            m = re.match(rf"\W*{re.escape(word)}\W*", text, re.IGNORECASE)
+            pattern = r"[\W_]+".join(re.escape(t) for t in w)
+            m = re.match(rf"\W*{pattern}\W*", text, re.IGNORECASE)
             return text[m.end():].strip() if m else text
     return None
+
+
+def load_wake_variants(path: str | Path | None, wake_words: list[str]) -> list[str]:
+    """Variantes apprises des mots d'éveil configurés (fichier absent ou illisible : aucune)."""
+    if not path or not wake_words or not Path(path).exists():
+        return []
+    try:
+        learned = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        log_error(log, f"Variantes du mot d'éveil illisibles ({path})", e)
+        return []
+    wanted = {_normalize(w) for w in wake_words}
+    return [v for word, variants in learned.items() if _normalize(word) in wanted
+            for v in variants if isinstance(v, str) and v.strip()]
 
 
 @register("stt", "whisper")
@@ -205,6 +230,7 @@ class WhisperSTT(STTEngine):
         pad_ms: int = 200,                 # marge audio avant/après la parole
         no_speech_threshold: float = 0.6,  # rejette les segments jugés « sans parole »
         wake_words: list[str] | None = None,   # ex. ["Seldon"] : marque les phrases qui commencent ainsi
+        wake_variants: str | None = "data/wake_words.json",   # transcriptions apprises : python -m seldon.tools.wakeword
         ignore: list[str] | None = None,   # phrases à jeter (hallucinations)
         barge_in: bool = True,             # écoute pendant que Seldon parle, pour pouvoir l'interrompre
         barge_in_db: float = -35.0,        # niveau minimal (dBFS) d'une interruption (au-dessus de l'écho)
@@ -226,10 +252,11 @@ class WhisperSTT(STTEngine):
         self.segmenter = Segmenter(self.vad_threshold, silence_ms, min_speech_ms, max_speech_s, pad_ms)
         self.no_speech_threshold = no_speech_threshold
         self.wake_words = wake_words or []
+        self.wake_forms = [*self.wake_words, *load_wake_variants(wake_variants, self.wake_words)]
         self.ignore = {_normalize(s) for s in (DEFAULT_IGNORE if ignore is None else ignore)}
         self.barge_in = barge_in
         self.barge_in_db = barge_in_db
-        self.interrupt_words = [*(DEFAULT_INTERRUPT if interrupt_words is None else interrupt_words), *self.wake_words]
+        self.interrupt_words = [*(DEFAULT_INTERRUPT if interrupt_words is None else interrupt_words), *self.wake_forms]
         self.barge_segmenter = Segmenter(self.vad_threshold, silence_ms=300, min_speech_ms=200, max_speech_s=5, pad_ms=100)
 
         self.model: Any = None
@@ -391,7 +418,7 @@ class WhisperSTT(STTEngine):
             return None
         if not self.wake_words:
             return text, None
-        stripped = strip_wake_word(text, self.wake_words)
+        stripped = strip_wake_word(text, self.wake_forms)
         if stripped is None:
             return text, False
         return stripped or text, True   # « Seldon » seul : un appel, auquel il répond

@@ -93,6 +93,7 @@ variables ne sont pas transmises aux commandes lancées par l'action terminal
 python -m seldon                    # mode vocal complet (config.yaml) ; Ctrl+C ou SIGTERM : arrêt propre
 python -m seldon --text             # clavier + console ; "Bastien: bonjour" simule un locuteur
 python -m seldon.tools.enroll Bastien   # enregistre une empreinte vocale
+python -m seldon.tools.wakeword         # entraîne le mot d'éveil sur votre voix
 python -m pytest                    # tests (sans micro, caméra ni modèle)
 ```
 
@@ -366,6 +367,16 @@ traité, mais les dernières phrases entendues (avec leur locuteur) sont
 transmises au cerveau la fois suivante : il sait de quoi on parlait et qui a
 dit quoi. Sans mots d'éveil, tout est transmis au cerveau, qui ignore ce qui
 ne lui est visiblement pas adressé.
+
+**Entraîner le mot d'éveil** : Whisper écrit parfois un nom propre de travers
+(« Celdon », « Sel don »…), et le mot d'éveil n'est alors pas reconnu.
+`python -m seldon.tools.wakeword` fait prononcer le mot d'éveil une dizaine de
+fois (seul ou en début de phrase), retient les transcriptions qui diffèrent,
+puis fait lire quelques phrases sans le mot d'éveil et écarte toute variante
+qui y apparaît en tête (elle réveillerait Seldon à tort). Les variantes sont
+ajoutées à `stt.options.wake_variants` (`data/wake_words.json`) et lues au
+démarrage ; `--list` les affiche, `--reset` les oublie. Si le mot est rarement
+bien transcrit, `initial_prompt: "Seldon"` aide aussi Whisper.
 
 ### Couper la parole
 

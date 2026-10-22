@@ -72,6 +72,27 @@ def test_wake_words():
     assert strip_wake_word("seldon", ["Seldon"]) == ""
     assert strip_wake_word("Allume la lumière", ["Seldon"]) is None
     assert strip_wake_word("Seldonia est loin", ["Seldon"]) is None
+    assert strip_wake_word("Sel-don, allume.", ["sel don"]) == "allume."
+
+
+def test_learned_wake_variants(tmp_path):
+    from seldon.tools.wakeword import candidate, useful
+
+    path = tmp_path / "wake_words.json"
+    path.write_text('{"Seldon": ["celdon", "sel don"], "Jarvis": ["jarvice"]}', encoding="utf-8")
+    stt = WhisperSTT(wake_words=["Seldon"], wake_variants=str(path))
+    assert stt.accept("Celdon, quelle heure est-il ?") == ("quelle heure est-il ?", True)
+    assert stt.accept("Sel don") == ("Sel don", True)
+    assert stt.accept("Jarvice, bonjour") == ("Jarvice, bonjour", False)   # autre mot d'éveil, non configuré
+    assert "celdon" in stt.interrupt_words
+    assert WhisperSTT(wake_variants=str(path)).wake_forms == []
+    path.write_text("{oups", encoding="utf-8")
+    assert WhisperSTT(wake_words=["Seldon"], wake_variants=str(path)).wake_forms == ["Seldon"]
+
+    assert candidate(["sel", "don", "quelle", "heure", "est", "il"], ["quelle", "heure", "est", "il"], 1) == ["sel", "don"]
+    assert candidate(["celdon"], [], 1) == ["celdon"]
+    assert candidate("un deux trois quatre".split(), [], 1) is None
+    assert useful("celdon") and not useful("selon") and not useful("c'est")
 
 
 def test_accept_filters():
