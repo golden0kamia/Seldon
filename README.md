@@ -132,7 +132,8 @@ Trois pages, choisies en haut de la fenêtre :
   automatiquement. Créer ou renommer refuse les chemins absolus et `..`, et
   n'écrase jamais un fichier existant.
 - **▤ Journal** (Ctrl+3) : menu **Seldon** › Lancer (F5, mode vocal) ou
-  Lancer en mode texte (Ctrl+F5), Arrêter (Maj+F5). Le programme principal
+  Lancer en mode texte (Ctrl+F5), Arrêter (Maj+F5), Redémarrer (Ctrl+Maj+F5).
+  Le programme principal
   tourne dans un sous-processus et ses logs s'affichent en direct
   (avertissements en ambre, erreurs en rouge), filtrables par niveau (Tout,
   Sans DEBUG, Avertissements, Erreurs) ; en mode texte, le champ sous le
@@ -145,7 +146,10 @@ Trois pages, choisies en haut de la fenêtre :
   ligne qui imite la balise (sortie d'une commande, réponse du modèle) n'affiche
   ni fausse question ni faux état du micro. **Arrêter** envoie Ctrl+C à Seldon
   et à ses sous-processus, un second appui force l'arrêt, et fermer
-  l'interface arrête Seldon (rien ne garde le micro). En mode vocal, le
+  l'interface arrête Seldon (rien ne garde le micro). **↻ Redémarrer** fait
+  le même arrêt propre puis relance Seldon dans le même mode (vocal ou texte),
+  par exemple pour appliquer une configuration modifiée ; Arrêter pendant le
+  redémarrage l'annule. En mode vocal, le
   bouton **🎙 Micro** (F6) coupe le micro sans arrêter Seldon : plus rien
   n'est entendu, pas même « stop », jusqu'à ce qu'on le rétablisse (signaux
   `SIGUSR1` / `SIGUSR2` du sous-processus, Linux / macOS). Des paramètres non

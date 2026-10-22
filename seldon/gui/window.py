@@ -125,6 +125,7 @@ class MainWindow(QMainWindow):
             "start": act("▶ &Lancer (mode vocal)", lambda: self.launch(text=False), "F5"),
             "text": act("▶ Lancer en mode &texte", lambda: self.launch(text=True), "Ctrl+F5"),
             "stop": act("■ &Arrêter", lambda: self.runner.stop(), "Shift+F5"),
+            "restart": act("↻ &Redémarrer (même mode)", self.runner.restart, "Ctrl+Shift+F5"),
             "mute": act("🔇 &Couper / rétablir le micro", self.runner.mic_btn.toggle, "F6"),
         }
         for a in self.run_actions.values():
@@ -196,6 +197,7 @@ class MainWindow(QMainWindow):
     def _runner_state(self) -> None:
         if hasattr(self, "run_actions"):
             self.run_actions["mute"].setEnabled(self.runner.can_mute)   # mode vocal, une fois Seldon prêt
+            self.run_actions["restart"].setEnabled(self.runner.restart_btn.isEnabled())
         self._update_status()
 
     def _confirmation_requested(self, question: str) -> None:

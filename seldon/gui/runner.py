@@ -73,6 +73,7 @@ class RunnerPanel(QWidget):
         self.ready = False     # a déjà écrit : ses signaux sont en place, le bouton micro peut servir
         self.stopping = False  # arrêt demandé, en attente de la fin du processus
         self.failed = False    # dernier lancement terminé sur une erreur
+        self.relaunch = False  # redémarrage demandé : relancé dans le même mode une fois arrêté
         self.min_level = 0
         self._pid = 0
         self._token = ""       # jeton du lancement en cours : seules ses balises sont crues (seldon.core.tags)
@@ -101,6 +102,7 @@ class RunnerPanel(QWidget):
         self.start_btn = QPushButton("▶  Lancer", objectName="primary", toolTip="Mode vocal complet (F5)")
         self.text_btn = QPushButton("▶  Mode texte", toolTip="Clavier + console (Ctrl+F5)")
         self.stop_btn = QPushButton("■  Arrêter", toolTip="Arrêter Seldon (Maj+F5) ; une seconde fois : arrêt immédiat")
+        self.restart_btn = QPushButton("↻  Redémarrer", toolTip="Arrêter puis relancer Seldon dans le même mode (Ctrl+Maj+F5)")
         self.mic_btn = QPushButton("🔇  Micro coupé", checkable=True)
         self.mic_btn.setMinimumWidth(self.mic_btn.sizeHint().width())   # le libellé change, pas la place
         self.mic_btn.toggled.connect(self.mute)
@@ -113,6 +115,7 @@ class RunnerPanel(QWidget):
         self.start_btn.clicked.connect(lambda: self.start(text=False))
         self.text_btn.clicked.connect(lambda: self.start(text=True))
         self.stop_btn.clicked.connect(lambda: self.stop())
+        self.restart_btn.clicked.connect(self.restart)
         clear_btn.clicked.connect(self.clear)
         top = QHBoxLayout()
         top.setSpacing(theme.SPACE)
@@ -121,6 +124,7 @@ class RunnerPanel(QWidget):
         top.addWidget(self.command, 1)
         top.addWidget(self.mic_btn)
         top.addWidget(self.stop_btn)
+        top.addWidget(self.restart_btn)
         top.addWidget(self.text_btn)
         top.addWidget(self.start_btn)
 
@@ -209,8 +213,9 @@ class RunnerPanel(QWidget):
     def stop(self, wait: bool = False) -> None:
         """Ctrl+C (SIGINT, comme au terminal), puis arrêt forcé si Seldon ne rend pas la main en 3 s.
 
-        Une seconde demande pendant l'arrêt force aussitôt la fin du processus.
+        Une seconde demande pendant l'arrêt force aussitôt la fin du processus (et annule un redémarrage).
         """
+        self.relaunch = False
         if not self.running:
             return
         if self.stopping:
@@ -229,6 +234,14 @@ class RunnerPanel(QWidget):
         else:
             pid = self._pid
             QTimer.singleShot(STOP_GRACE_MS, lambda: self.running and self._pid == pid and self._kill())
+
+    def restart(self) -> None:
+        """Arrêt habituel (Ctrl+C, puis arrêt forcé), puis relance dans le même mode une fois le processus terminé."""
+        if not self.running or self.stopping:
+            return
+        self.stop()
+        self.relaunch = True
+        self._update()
 
     def _signal(self, sig: int | None, group: bool = True) -> bool:
         """Envoie ``sig`` au processus (et à son groupe si ``group``) ; ``False`` si impossible."""
@@ -362,6 +375,9 @@ class RunnerPanel(QWidget):
         self.pending = self.ready = self.stopping = False
         self._set_muted(False)
         self.running_changed.emit(False)
+        if self.relaunch:
+            self.relaunch = False
+            self.start(text=self.text_mode)
 
     def _error(self, error: QProcess.ProcessError) -> None:
         if error == QProcess.ProcessError.FailedToStart:
@@ -433,6 +449,7 @@ class RunnerPanel(QWidget):
         self.start_btn.setEnabled(not on)
         self.text_btn.setEnabled(not on)
         self.stop_btn.setEnabled(on)
+        self.restart_btn.setEnabled(on and not self.stopping)
         self.input.setEnabled(on and (self.text_mode or self.pending))
         if self.pending:
             hint = "Répondre : « o » / « n », ou boutons Oui / Non"
@@ -454,7 +471,7 @@ class RunnerPanel(QWidget):
         self.confirm_bar.setVisible(self.pending)
         mode = "mode texte" if self.text_mode else "mode vocal"
         if self.stopping:
-            state, color = "arrêt en cours…", theme.AMBER
+            state, color = "redémarrage…" if self.relaunch else "arrêt en cours…", theme.AMBER
         elif self.pending:
             state, color = f"{mode} · confirmation demandée", theme.AMBER
         elif on:

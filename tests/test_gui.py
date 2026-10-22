@@ -379,6 +379,37 @@ def test_logs_page_mutes_microphone_with_signals(window, qapp, monkeypatch):
     assert not r.mic_btn.isChecked() and not r.mic_btn.isEnabled()
 
 
+def test_logs_page_restarts_in_same_mode(window, qapp, monkeypatch):
+    from PySide6.QtCore import QDeadlineTimer
+
+    r = window.runner
+    modes = []
+    script = "import os, time; print('pid', os.getpid(), flush=True); time.sleep(60)"
+    monkeypatch.setattr(r, "arguments", lambda text: modes.append(text) or ["-c", script])
+    assert not r.restart_btn.isEnabled()   # rien à redémarrer
+    window.launch(text=True)
+    deadline = QDeadlineTimer(10000)
+
+    def wait(cond):
+        while not cond() and not deadline.hasExpired():
+            r.process.waitForReadyRead(50)
+            qapp.processEvents()
+        assert cond()
+
+    wait(lambda: r.ready)
+    first = r._pid
+    modes.clear()
+    r.restart_btn.click()
+    assert r.stopping and not r.restart_btn.isEnabled() and "redémarrage" in r.command.text()
+    wait(lambda: r.ready and r._pid not in (0, first))   # arrêté (Ctrl+C) puis relancé
+    assert r.running and r.text_mode and modes and all(modes)   # même mode : texte
+    r._flush()
+    assert "Seldon arrêté" in r.log.toPlainText()
+    assert window.run_actions["restart"].isEnabled()
+    r.stop(wait=True)
+    assert not r.running and not r.relaunch
+
+
 # --- robustesse ----------------------------------------------------------------
 
 def test_plugin_scan_survives_odd_sources(tmp_path):
