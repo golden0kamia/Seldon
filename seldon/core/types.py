@@ -19,6 +19,7 @@ class Utterance:
     timestamp: float = field(default_factory=time.time)
     audio: Any = None                   # numpy array float32 16 kHz mono (optionnel)
     addressed: bool | None = None       # mot d'éveil prononcé ; None si aucun n'est configuré
+    typed: bool = False                 # tapé au clavier : les commandes locales exigent le « / »
     notes: list[str] = field(default_factory=list)   # contexte ajouté par Seldon pour le cerveau
 
 

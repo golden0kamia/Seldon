@@ -348,7 +348,7 @@ class Assistant:
             return
         if utterance.addressed:
             self._attend()
-        if self.enable_commands and (found := commands.match(utterance.text)):
+        if self.enable_commands and (found := commands.match(utterance.text, utterance.typed)):
             cmd, args = found
             await self.events.emit("command", name=cmd.aliases[0], args=args)
             reply = await cmd.handler(self, args)

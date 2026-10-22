@@ -60,6 +60,12 @@ def test_no_match_in_normal_sentences(text):
     assert match(text) is None
 
 
+@pytest.mark.parametrize("text,found", [("quitter", False), ("Coupe le micro", False), ("/quitter", True),
+                                        ("  /muet", True), ("/reprendre 2", True)])
+def test_typed_needs_slash(text, found):
+    assert (match(text, typed=True) is not None) == found
+
+
 def test_normalize():
     assert normalize("/Stop   Seldon !") == "stop seldon"
 
@@ -114,3 +120,15 @@ async def test_control_action_mutes_and_quits():
     assert stt.muted
     assert brain.seen == ["fais couper_micro", "fais quitter"]
     assert "après ta réponse" in tts.said[-1]
+
+
+async def test_typed_text_without_slash_goes_to_brain():
+    class TypedSTT(ScriptedSTT):
+        async def listen(self):
+            for line in self.lines:
+                yield Utterance(line, typed=True)
+
+    brain, tts = EchoBrain(), RecordingTTS()
+    await Assistant(TypedSTT(["quitter", "/exit", "jamais traité"]), NoSpeakerId(), brain, tts, [Speak()]).run()
+    assert brain.seen == ["quitter"]
+    assert tts.said == ["écho quitter", "Au revoir."]

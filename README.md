@@ -99,8 +99,10 @@ python -m pytest                    # tests (sans micro, caméra ni modèle)
 Commandes locales (traitées sans passer par le modèle, au clavier ou à la voix) :
 `exit` / `quitter`, `muet` / `coupe le micro`, `nouvelle` / `oublie tout`,
 `conversations [mots-clés]`, `reprendre N|mots-clés`, `supprimer N`, `actions`,
-`aide`. Le « / » initial est facultatif (obligatoire pour passer des arguments).
-Un numéro désigne une ligne de la dernière liste affichée par `conversations`.
+`aide`. À la voix, le « / » initial est facultatif ; au clavier il est
+obligatoire (« quitter » tapé seul part au cerveau comme une phrase ordinaire),
+comme pour passer des arguments. Un numéro désigne une ligne de la dernière
+liste affichée par `conversations`.
 
 Ces commandes demandent la phrase exacte. Avec l'action `controle` (dans
 `actions:`), on peut aussi le demander librement (« tu peux couper ton micro ? »,

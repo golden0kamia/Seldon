@@ -2,7 +2,8 @@
 
 Une prise de parole déclenche une commande si son texte normalisé (minuscules,
 sans ponctuation, « / » initial facultatif) correspond exactement à un alias :
-« exit », « /exit », « Quitter. »… Pour en ajouter une :
+« exit », « /exit », « Quitter. »… Au clavier, le « / » est obligatoire : « quitter »
+tapé seul part au cerveau comme une phrase ordinaire. Pour en ajouter une :
 
     @command("heure", "quelle heure", help="Donne l'heure")
     async def _heure(assistant, args):
@@ -47,8 +48,10 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s'-]", " ", text)).strip()
 
 
-def match(text: str) -> tuple[Command, str] | None:
-    """Commande correspondant au texte, avec les arguments éventuels."""
+def match(text: str, typed: bool = False) -> tuple[Command, str] | None:
+    """Commande correspondant au texte, avec les arguments éventuels (``typed`` : « / » exigé)."""
+    if typed and not text.lstrip().startswith("/"):
+        return None
     norm = normalize(text)
     for cmd in COMMANDS:
         for alias in cmd.aliases:

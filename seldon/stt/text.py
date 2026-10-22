@@ -69,4 +69,4 @@ class TextInput(STTEngine):
             head, sep, tail = line.partition(":")
             if sep and head and " " not in head.strip():
                 speaker, line = head.strip(), tail.strip()
-            yield Utterance(text=line, speaker=speaker, speaker_confidence=1.0 if speaker else 0.0)
+            yield Utterance(text=line, speaker=speaker, speaker_confidence=1.0 if speaker else 0.0, typed=True)
