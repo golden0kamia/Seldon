@@ -51,7 +51,7 @@ brain:
   # engine: ollama
   # options: {model: llama3.1:8b}
   # engine: claude
-  # options: {model: claude-opus-5-5, effort: low}   # nécessite ANTHROPIC_API_KEY
+  # options: {model: claude-opus-5-5, effort: low}   # nécessite ANTHROPIC_API_KEY (fichier .env)
 
 tts:
   engine: piper           # pyttsx3 en secours (espeak)
@@ -78,11 +78,11 @@ actions:
       url: ws://127.0.0.1:4333
       backend: auto       # auto | remote | mpris
       timeout: 10
-      # identifiants : variables d'environnement FEISHIN_USERNAME / FEISHIN_PASSWORD
+      # identifiants : FEISHIN_USERNAME / FEISHIN_PASSWORD dans le fichier .env
   - engine: home_assistant   # domotique via le serveur MCP de Home Assistant
     options:
       url: http://192.168.1.105:8123/api/mcp
-      # jeton longue durée : variable d'environnement HA_TOKEN (ne jamais l'écrire ici)
+      # jeton longue durée : HA_TOKEN dans le fichier .env (ne jamais l'écrire ici)
       timeout: 10
       confirm_domains: [lock, alarm_control_panel]
       confirm_keywords: [portail, garage, serrure, verrou, alarme]

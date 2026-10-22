@@ -66,13 +66,30 @@ et laisser `thinking: false`.
 
 Paquets système : `libportaudio2` (micro/haut-parleur), `espeak-ng` (seulement pour le TTS pyttsx3).
 
+### Identifiants
+
+Les secrets (jeton Home Assistant, mot de passe Feishin, clé API Anthropic) ne
+s'écrivent jamais dans `config.yaml` mais dans un fichier `.env` à côté de lui,
+ignoré par git :
+
+```bash
+cp .env.example .env && chmod 600 .env   # puis remplir HA_TOKEN, FEISHIN_PASSWORD…
+```
+
+Une ligne par variable (`CLÉ=valeur`, `export` et guillemets acceptés, `#` pour
+les commentaires). Seldon le charge au démarrage (avec `-c`, celui du dossier de
+la configuration) ; une variable déjà exportée dans le shell l'emporte. Un
+avertissement signale un `.env` lisible par d'autres utilisateurs. Ces
+variables ne sont pas transmises aux commandes lancées par l'action terminal
+(`hidden_env`), et lire `.env` y demande une confirmation.
+
 ## Utilisation
 
 ```bash
 python -m seldon                    # mode vocal complet (config.yaml) ; Ctrl+C ou SIGTERM : arrêt propre
 python -m seldon --text             # clavier + console ; "Bastien: bonjour" simule un locuteur
 python -m seldon.tools.enroll Bastien   # enregistre une empreinte vocale
-pytest                              # tests (sans micro, caméra ni modèle)
+python -m pytest                    # tests (sans micro, caméra ni modèle)
 ```
 
 Commandes locales (traitées sans passer par le modèle, au clavier ou à la voix) :
@@ -242,7 +259,8 @@ position, aléatoire, répétition, favori, note, recherche dans la bibliothèqu
 et lecture d'un titre, d'un album ou d'une playlist (« mets l'album Hearts
 d'America »). Elle passe par le serveur « Remote control » de Feishin
 (Paramètres > Général, port 4333, extra `seldon[music]`) avec les identifiants
-des variables `FEISHIN_USERNAME` / `FEISHIN_PASSWORD`. Sans ce serveur, les
+`FEISHIN_USERNAME` / `FEISHIN_PASSWORD` du fichier `.env` (voir
+[Identifiants](#identifiants)). Sans ce serveur, les
 commandes de base passent par MPRIS (D-Bus) ; la recherche, les favoris et les
 notes exigent le Remote control. Pas de recherche par artiste : Seldon cherche
 ses albums ou ses titres.
@@ -262,8 +280,9 @@ exposés) passent par un seul outil `home_assistant`.
 3. **Créer un jeton longue durée** : profil (en bas à gauche) → *Sécurité* →
    *Jetons d'accès longue durée* → *Créer un jeton*, avec un compte
    administrateur (exigé par défaut par l'intégration).
-4. **Le donner à Seldon sans l'écrire dans la configuration** :
-   `export HA_TOKEN="…"` (ou `HOME_ASSISTANT_TOKEN`) avant de lancer Seldon.
+4. **Le donner à Seldon sans l'écrire dans la configuration** : ligne
+   `HA_TOKEN=…` (ou `HOME_ASSISTANT_TOKEN`) dans le fichier `.env` (voir
+   [Identifiants](#identifiants)), ou `export HA_TOKEN="…"` avant de lancer Seldon.
 
 Si Home Assistant est injoignable au démarrage, Seldon démarre quand même et
 réessaie au premier appel. Une **confirmation** est demandée avant de

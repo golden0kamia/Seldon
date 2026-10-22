@@ -7,8 +7,9 @@ import asyncio
 import logging
 import signal
 import sys
+from pathlib import Path
 
-from seldon.config import Config, StageConfig
+from seldon.config import Config, StageConfig, load_secrets
 from seldon.core import tags
 from seldon.core.errors import log_error
 from seldon.core.pipeline import MUTE_SIGNALS, Assistant
@@ -27,6 +28,9 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     try:
+        secrets = Path(args.config).parent / ".env"   # identifiants, hors de config.yaml
+        if keys := load_secrets(secrets):
+            log.info("Identifiants chargés depuis %s : %s", secrets, ", ".join(keys))
         cfg = Config.load(args.config)
         if args.text:
             cfg.stt = StageConfig("text")

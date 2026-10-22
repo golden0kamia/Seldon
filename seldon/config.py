@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import difflib
 import logging
+import os
+import re
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,6 +26,44 @@ LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 CONFIRM_MODES = ("console", "always", "never")
 TOP_LEVEL = ("stt", "speakers", "brain", "tts", "actions", "memory", "commands", "confirm", "follow_up_s",
              "acknowledge", "log_level")
+
+
+_ENV_LINE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$")
+
+
+def load_secrets(path: str | Path) -> list[str]:
+    """Charge un fichier ``.env`` (``CLÉ=valeur``) dans l'environnement ; renvoie les clés définies.
+
+    Les identifiants (HA_TOKEN, FEISHIN_PASSWORD, ANTHROPIC_API_KEY…) restent ainsi
+    hors de config.yaml. Une variable déjà exportée garde sa valeur. Fichier absent : rien.
+    """
+    path = Path(path)
+    try:
+        text = path.read_text(encoding="utf-8")
+        mode = path.stat().st_mode
+    except FileNotFoundError:
+        return []
+    except (OSError, UnicodeDecodeError) as e:
+        raise SeldonError(f"Impossible de lire {path} : {e}") from None
+    if mode & (stat.S_IRWXG | stat.S_IRWXO):
+        log.warning("%s est lisible par d'autres utilisateurs : chmod 600 %s", path, path)
+    loaded = []
+    for n, line in enumerate(text.splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        m = _ENV_LINE.match(line)
+        if not m:   # pas la ligne dans le message : ce pourrait être un secret mal formé
+            log.warning("%s, ligne %d ignorée : attendu CLÉ=valeur", path, n)
+            continue
+        key, value = m.groups()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        elif " #" in value:   # commentaire en fin de ligne, hors guillemets
+            value = value.split(" #", 1)[0].rstrip()
+        if key not in os.environ:
+            os.environ[key] = value
+            loaded.append(key)
+    return loaded
 
 
 @dataclass
