@@ -164,6 +164,9 @@ class Assistant:
         ]
 
     async def start(self) -> None:
+        for action in self.actions.values():   # services (tts, busy…) pour les actions en arrière-plan
+            if callable(bind := getattr(action, "bind_services", None)):
+                bind(self.services)
         for label, component in self._components():
             try:
                 await component.start()

@@ -234,6 +234,63 @@ sous `allowed_dirs` (par défaut son `cwd`), reçoit la tâche comme un texte
 `permission_mode: bypassPermissions`. Une annonce de fin en arrière-plan
 attend la fin de l'échange en cours.
 
+### Musique : Feishin
+
+L'action `feishin` (outil `control_music`) pilote le lecteur Feishin lancé sur
+l'ordinateur : titre en cours, lecture/pause, suivant/précédent, volume,
+position, aléatoire, répétition, favori, note, recherche dans la bibliothèque
+et lecture d'un titre, d'un album ou d'une playlist (« mets l'album Hearts
+d'America »). Elle passe par le serveur « Remote control » de Feishin
+(Paramètres > Général, port 4333, extra `seldon[music]`) avec les identifiants
+des variables `FEISHIN_USERNAME` / `FEISHIN_PASSWORD`. Sans ce serveur, les
+commandes de base passent par MPRIS (D-Bus) ; la recherche, les favoris et les
+notes exigent le Remote control. Pas de recherche par artiste : Seldon cherche
+ses albums ou ses titres.
+
+### Domotique : Home Assistant
+
+L'action `home_assistant` pilote la maison (lumières, prises, volets,
+chauffage, médias, minuteurs…) via le serveur MCP de Home Assistant. Tous les
+outils d'Assist (HassTurnOn, HassLightSet, GetLiveContext…, et vos scripts
+exposés) passent par un seul outil `home_assistant`.
+
+1. **Activer le serveur MCP** : *Paramètres → Appareils et services → Ajouter
+   une intégration → « Model Context Protocol Server »*, API LLM « Assist ».
+   Il répond sur `http://<ip-de-HA>:8123/api/mcp`.
+2. **Choisir les appareils** : *Paramètres → Assistants vocaux → Exposer*.
+   Seules les entités exposées à Assist sont accessibles.
+3. **Créer un jeton longue durée** : profil (en bas à gauche) → *Sécurité* →
+   *Jetons d'accès longue durée* → *Créer un jeton*, avec un compte
+   administrateur (exigé par défaut par l'intégration).
+4. **Le donner à Seldon sans l'écrire dans la configuration** :
+   `export HA_TOKEN="…"` (ou `HOME_ASSISTANT_TOKEN`) avant de lancer Seldon.
+
+Si Home Assistant est injoignable au démarrage, Seldon démarre quand même et
+réessaie au premier appel. Une **confirmation** est demandée avant de
+déverrouiller une serrure, désarmer une alarme ou ouvrir un portail ou un
+garage (`confirm_domains`, `confirm_keywords`, `confirm_tools`) ;
+`allowed_tools` / `denied_tools` limitent les outils proposés au modèle.
+
+### Contrôle du PC
+
+L'action `desktop` (outil `control_computer`) pilote l'ordinateur hôte, pensée
+pour KDE Plasma 6 sous Wayland (avec replis GNOME et génériques) :
+
+- **notifications lues à voix haute** (`read_notifications`, activable à la
+  voix) : mode ne pas déranger respecté, applications ignorées (`ignore_apps`),
+  rafales regroupées, débit limité (`max_per_minute`), annonce qui attend la
+  fin d'un échange ; rappel des dernières notifications reçues ;
+- luminosité des écrans, moniteurs externes compris (API ScreenBrightness de
+  Plasma, sinon `ddcutil`) ; mode **ne pas déranger** avec durée ;
+- volume et sourdine (`wpctl`/`pactl`), lecteurs multimédia (MPRIS), batterie ;
+- verrouillage de l'écran, mise en veille (toujours confirmée), ouverture d'une
+  application installée ou d'une adresse web, envoi d'une notification, capture
+  d'écran transmise au modèle.
+
+Aucun shell n'est utilisé, chaque fonction se désactive proprement si l'outil
+système manque, et `commands` restreint les fonctions proposées. Le texte des
+notifications est transmis au modèle comme une donnée, pas comme une consigne.
+
 ### Voix inconnues
 
 Seldon reconnaît les personnes à leur voix. Quand une voix n'est pas encore

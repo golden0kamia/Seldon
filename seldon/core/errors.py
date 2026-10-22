@@ -23,6 +23,7 @@ EXTRAS = {
     "piper": "tts",
     "pyttsx3": "tts",
     "cv2": "camera",
+    "websockets": "music",
     "httpx": "llm-local",
     "ollama": "llm-local",
     "anthropic": "llm-claude",

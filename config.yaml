@@ -73,3 +73,21 @@ actions:
     options:
       device: 0
       save_dir: data/captures
+  - engine: feishin       # musique : Remote control de Feishin, sinon MPRIS
+    options:
+      url: ws://127.0.0.1:4333
+      backend: auto       # auto | remote | mpris
+      timeout: 10
+      # identifiants : variables d'environnement FEISHIN_USERNAME / FEISHIN_PASSWORD
+  - engine: home_assistant   # domotique via le serveur MCP de Home Assistant
+    options:
+      url: http://192.168.1.105:8123/api/mcp
+      # jeton longue durée : variable d'environnement HA_TOKEN (ne jamais l'écrire ici)
+      timeout: 10
+      confirm_domains: [lock, alarm_control_panel]
+      confirm_keywords: [portail, garage, serrure, verrou, alarme]
+  - engine: desktop       # contrôle du PC : notifications lues, luminosité, ne pas déranger…
+    options:
+      read_notifications: true
+      ignore_apps: [Seldon]
+      max_per_minute: 6

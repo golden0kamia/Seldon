@@ -51,6 +51,9 @@ _BUILTINS: dict[str, dict[str, str]] = {
         "camera": "seldon.actions.camera",
         "conversations": "seldon.actions.conversations",
         "voix": "seldon.actions.voices",
+        "feishin": "seldon.actions.feishin",
+        "home_assistant": "seldon.actions.home_assistant",
+        "desktop": "seldon.actions.desktop",
     },
 }
 
