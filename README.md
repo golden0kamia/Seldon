@@ -72,7 +72,8 @@ Paquets système : `libportaudio2` (micro/haut-parleur), `espeak-ng` (seulement 
 
 ### Identifiants
 
-Les secrets (jeton Home Assistant, mot de passe Feishin, clé API Anthropic) ne
+Les secrets (jeton Home Assistant, mots de passe Feishin et Nextcloud, clé API
+Anthropic) ne
 s'écrivent jamais dans `config.yaml` mais dans un fichier `.env` à côté de lui,
 ignoré par git :
 
@@ -307,6 +308,37 @@ réessaie au premier appel. Une **confirmation** est demandée avant de
 déverrouiller une serrure, désarmer une alarme ou ouvrir un portail ou un
 garage (`confirm_domains`, `confirm_keywords`, `confirm_tools`) ;
 `allowed_tools` / `denied_tools` limitent les outils proposés au modèle.
+
+### Nextcloud
+
+L'action `nextcloud` donne accès aux notes, à l'agenda (événements et tâches) et
+aux contacts de Nextcloud via
+[nextcloud-mcp-server](https://github.com/cbcoutinho/nextcloud-mcp-server), un
+serveur MCP lancé à côté de Seldon. Comme pour Home Assistant, tous ses outils
+(`nc_notes_search_notes`, `nc_calendar_get_upcoming_events`…) passent par un
+seul outil `nextcloud`.
+
+1. **Créer un mot de passe d'application** dans Nextcloud : *Paramètres
+   personnels → Sécurité → Créer un nouveau mot de passe d'application*.
+2. **Le mettre dans `.env`** (voir [Identifiants](#identifiants)) :
+   `NEXTCLOUD_HOST=https://cloud.example.com`, `NEXTCLOUD_USERNAME=…`,
+   `NEXTCLOUD_PASSWORD=<mot de passe d'application>`.
+3. **Lancer le serveur MCP** : `./nextcloud-mcp.sh` (via `pipx run` ; il
+   n'écoute que la machine elle-même, sur `http://127.0.0.1:8000/mcp`, et
+   n'active que les notes, l'agenda et les contacts — `./nextcloud-mcp.sh -e
+   webdav` ajoute les fichiers). Avec Docker : `docker run -p
+   127.0.0.1:8000:8000 --env-file .env ghcr.io/cbcoutinho/nextcloud-mcp-server`.
+
+Le serveur expose plus d'une centaine d'outils : seuls ceux des applications de
+`apps` sont proposés au modèle (`notes`, `calendar`, `contacts` par défaut ;
+aussi `webdav`, `deck`, `tables`, `cookbook`, `news`, `mail`, `sharing`,
+`talk`… ou `null` pour tout). Une **confirmation** est demandée avant de
+supprimer, déplacer, restaurer, envoyer ou partager (`confirm_words`,
+`confirm_tools`). Par défaut (`auth: none`) le serveur MCP détient seul les
+identifiants ; `auth: basic` les envoie depuis Seldon (serveur en mode
+`multi_user_basic`), `auth: bearer` envoie le jeton `NEXTCLOUD_MCP_TOKEN`. Si
+le serveur est injoignable au démarrage, Seldon démarre quand même et réessaie
+au premier appel.
 
 ### Contrôle du PC
 

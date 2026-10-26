@@ -53,6 +53,7 @@ _BUILTINS: dict[str, dict[str, str]] = {
         "voix": "seldon.actions.voices",
         "feishin": "seldon.actions.feishin",
         "home_assistant": "seldon.actions.home_assistant",
+        "nextcloud": "seldon.actions.nextcloud",
         "desktop": "seldon.actions.desktop",
         "controle": "seldon.actions.control",
     },

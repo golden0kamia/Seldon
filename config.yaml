@@ -88,6 +88,11 @@ actions:
       timeout: 10
       confirm_domains: [lock, alarm_control_panel]
       confirm_keywords: [portail, garage, serrure, verrou, alarme]
+  - engine: nextcloud     # notes, agenda, contacts via nextcloud-mcp-server
+    options:
+      url: http://127.0.0.1:8000/mcp
+      apps: [notes, calendar, contacts]   # ajouter webdav (fichiers), deck, tables… ; null = toutes
+      auth: none          # le serveur MCP détient le mot de passe d'application (voir README)
   - engine: desktop       # contrôle du PC : notifications lues, luminosité, ne pas déranger…
     options:
       read_notifications: true
