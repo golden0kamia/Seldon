@@ -1,11 +1,11 @@
-"""Fenêtre principale : trois pages, Paramètres, Éditeur (arborescence + fichiers en onglets) et Journal."""
+"""Fenêtre principale : quatre pages, Paramètres, Éditeur (arborescence + fichiers en onglets), Journal et Structure."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QSettings, Qt
-from PySide6.QtGui import QAction, QActionGroup, QGuiApplication, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QGuiApplication, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QLabel, QMainWindow, QSplitter, QStackedWidget, QVBoxLayout, QWidget,
 )
@@ -15,10 +15,11 @@ from seldon.gui.editor import EditorTabs, FileTab
 from seldon.gui.files import FileBrowser
 from seldon.gui.runner import RunnerPanel
 from seldon.gui.settings import SettingsPanel
+from seldon.gui.structure import StructurePanel
 
 THEMES = [("auto", "Automatique (système)"), ("light", "Clair"), ("dark", "Sombre"),
           ("retro", "Rétro-futurisme (néon)"), ("cyber", "Cyberpunk (terminal)"), ("hud", "HUD de science-fiction")]
-SETTINGS_PAGE, EDITOR_PAGE, LOGS_PAGE = 0, 1, 2
+SETTINGS_PAGE, EDITOR_PAGE, LOGS_PAGE, STRUCTURE_PAGE = 0, 1, 2, 3
 
 
 def project_roots(project: Path, doc) -> list[tuple[str, Path]]:
@@ -50,6 +51,7 @@ class MainWindow(QMainWindow):
         self.editors.default_dir = lambda: self.files.root or self.project
         self.settings = SettingsPanel(self.config_path)
         self.runner = RunnerPanel(self.config_path)
+        self.structure = StructurePanel()
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.addWidget(self.files)
@@ -61,6 +63,7 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self.settings)   # SETTINGS_PAGE
         self.pages.addWidget(splitter)        # EDITOR_PAGE
         self.pages.addWidget(self.runner)     # LOGS_PAGE
+        self.pages.addWidget(self.structure)  # STRUCTURE_PAGE
         self.masthead = theme.Masthead()
         central = QWidget(objectName="central")
         lay = QVBoxLayout(central)
@@ -79,6 +82,7 @@ class MainWindow(QMainWindow):
         self.files.deleted.connect(self.editors.path_deleted)
         self.files.root_changed.connect(lambda p: self.statusBar().showMessage(str(p), 3000))
         self.settings.open_requested.connect(self.open_path)
+        self.structure.open_requested.connect(self.open_location)
         self.settings.saved.connect(self._settings_saved)
         self.settings.dirty_changed.connect(lambda _d: self._update_status())
         self.settings.reloaded.connect(self._update_status)
@@ -139,6 +143,7 @@ class MainWindow(QMainWindow):
         view.addAction(act("⚙ Paramètres", lambda: self.show_page(SETTINGS_PAGE), "Ctrl+1"))
         view.addAction(act("✎ Éditeur", lambda: self.show_page(EDITOR_PAGE), "Ctrl+2"))
         view.addAction(act("▤ Journal", lambda: self.show_page(LOGS_PAGE), "Ctrl+3"))
+        view.addAction(act("◈ Structure du code", lambda: self.show_page(STRUCTURE_PAGE), "Ctrl+4"))
         view.addSeparator()
         self.show_hidden = act("Afficher les fichiers cachés", self.files.set_show_hidden)
         self.show_hidden.setCheckable(True)
@@ -176,6 +181,9 @@ class MainWindow(QMainWindow):
                 tab.editor.setFocus()
         elif index == LOGS_PAGE:
             (self.runner.input if self.runner.input.isEnabled() else self.runner.log).setFocus()
+        elif index == STRUCTURE_PAGE:
+            self.structure.ensure_loaded()   # analyse du code au premier affichage seulement
+            self.structure.search.setFocus()
         else:
             self.settings.nav.setFocus()
         self._update_status()
@@ -237,6 +245,16 @@ class MainWindow(QMainWindow):
         self.editors.open_file(path)
         self.show_page(EDITOR_PAGE)
 
+    def open_location(self, path: Path, line: int) -> None:
+        """Ouvre ``path`` dans l'éditeur, curseur au début de la ligne ``line`` (1 = première)."""
+        tab = self.editors.open_file(path)
+        self.show_page(EDITOR_PAGE)
+        if tab and tab.editor:
+            block = tab.editor.document().findBlockByNumber(max(line - 1, 0))
+            cursor = QTextCursor(block)
+            tab.editor.setTextCursor(cursor)
+            tab.editor.centerCursor()
+
     def choose_file(self) -> None:
         start = str(self.files.root or self.project)
         paths, _ = QFileDialog.getOpenFileNames(self, "Ouvrir des fichiers", start)
@@ -276,7 +294,8 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(f"{tab.title} — Seldon")
         else:
             self.position.setText("")
-            titles = {SETTINGS_PAGE: "Paramètres — Seldon", LOGS_PAGE: "Journal — Seldon"}
+            titles = {SETTINGS_PAGE: "Paramètres — Seldon", LOGS_PAGE: "Journal — Seldon",
+                      STRUCTURE_PAGE: "Structure — Seldon"}
             self.setWindowTitle(titles.get(self.pages.currentIndex(), "Seldon"))
 
     # --- persistance --------------------------------------------------------
