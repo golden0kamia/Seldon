@@ -82,14 +82,25 @@ def test_settings_edit_and_save(window, tmp_path):
     s = window.settings
     assert s.nav.count() == 7 and not s.dirty
     brain_page = s.pages.widget(4)   # Général, Mémoire, STT, Locuteurs, Cerveau…
+    boxes = brain_page.findChildren(QCheckBox)
+    backup = next(c for c in boxes if c.text() == "Cerveau de secours")
     checks = {c.parent().layout().itemAt(c.parent().layout().indexOf(c) - 1).widget().text(): c
-              for c in brain_page.findChildren(QCheckBox)}
+              for c in boxes if c is not backup}
     checks["thinking"].setChecked(True)
     assert s.dirty
     assert s.save()
     text = (tmp_path / "config.yaml").read_text(encoding="utf-8")
     assert "thinking: true        # raisonnement du modèle" in text
     assert "# engine: ollama" in text   # blocs commentés conservés
+
+    backup.setChecked(True)
+    assert s.save()
+    from seldon.config import Config
+    cfg = Config.load(tmp_path / "config.yaml")
+    assert cfg.brain.engine == "llamacpp" and cfg.brain_backup.engine == "openai"
+    backup.setChecked(False)
+    assert s.save()
+    assert Config.load(tmp_path / "config.yaml").brain_backup is None
 
 
 def test_editor_open_edit_save(window, tmp_path):
@@ -273,14 +284,14 @@ def test_layout_does_not_move_with_state_or_engine(window, qapp):
     assert where() == before
 
     s = window.settings
-    s.nav.setCurrentRow(4)   # Cerveau
+    s.nav.setCurrentRow(5)   # Voix (TTS)
     stage = s.pages.currentWidget().findChild(StageEditor)
     fields = lambda: sorted((f.mapTo(window, QPoint(0, 0)).x(), f.mapTo(window, QPoint(0, 0)).y())
                             for i in range(stage.form.grid.count())
                             if isinstance(f := stage.form.grid.itemAt(i).widget(), QLineEdit))
     qapp.processEvents()
     ref = fields()
-    for engine in ("ollama", "claude", "llamacpp"):   # options inconnues de certains moteurs : « ⚠ »
+    for engine in ("console", "pyttsx3", "piper"):   # options inconnues de certains moteurs : « ⚠ »
         stage.combo.setCurrentText(engine)
         qapp.processEvents()
         assert fields() == ref, engine
@@ -677,3 +688,27 @@ def test_structure_page_highlights_links_and_opens_code(window):
     panel._open("pipeline")
     assert window.pages.currentIndex() == EDITOR_PAGE
     assert window.editors.current().path == panel.root / "core" / "pipeline.py"
+
+
+def test_brain_form_follows_engine_and_keeps_keys_out_of_config(window, tmp_path):
+    from seldon.gui.brainform import BrainEditor, read_env
+
+    s = window.settings
+    brain = s.pages.widget(4).findChild(BrainEditor)
+    brain._set("max_steps", 7)
+    brain._engine_changed("openai")
+    assert brain.engine == "openai" and "max_steps" not in brain.options   # options mises de côté
+    assert "reasoning_effort" in brain.resets and "thinking" not in brain.resets
+    brain._engine_changed("llamacpp")
+    assert brain.options["max_steps"] == 7                                  # retrouvées au retour
+
+    brain._engine_changed("claude")
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QLineEdit
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)   # formulaires précédents détruits
+    key = next(f for f in brain.findChildren(QLineEdit) if f.accessibleName() == "Clé API")
+    key.setText("sk-ant-test")
+    key.returnPressed.emit()
+    env = tmp_path / ".env"
+    assert read_env(env)["ANTHROPIC_API_KEY"] == "sk-ant-test" and env.stat().st_mode & 0o077 == 0
+    assert s.save() and "sk-ant" not in (tmp_path / "config.yaml").read_text(encoding="utf-8")

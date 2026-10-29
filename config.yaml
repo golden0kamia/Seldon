@@ -42,7 +42,7 @@ speakers:
     max_samples: 40       # échantillons gardés par voix (les plus récents)
 
 brain:
-  engine: llamacpp        # serveur local `llama serve` (llama.cpp). Alternatives : ollama, claude
+  engine: llamacpp        # serveur local `llama serve` (llama.cpp). Alternatives : ollama, claude, openai
   options:
     base_url: http://127.0.0.1:9931/v1
     model: null           # null = modèle chargé sur le serveur
@@ -53,6 +53,11 @@ brain:
   # options: {model: llama3.1:8b}
   # engine: claude
   # options: {model: claude-opus-5-5, effort: low}   # nécessite ANTHROPIC_API_KEY (fichier .env)
+  # engine: openai
+  # options: {model: gpt-5.6-luna, reasoning_effort: low}   # nécessite OPENAI_API_KEY (fichier .env)
+  # backup:               # cerveau de secours si le principal ne démarre pas ou échoue (même format)
+  #   engine: claude
+  #   options: {model: claude-opus-5-5, effort: low}
 
 tts:
   engine: piper           # pyttsx3 en secours (espeak)

@@ -101,6 +101,7 @@ class Config:
     brain: StageConfig
     tts: StageConfig
     actions: list[StageConfig]
+    brain_backup: StageConfig | None = None   # cerveau de secours (brain.backup)
     memory: dict[str, Any] = field(default_factory=dict)   # options de ConversationMemory + enabled
     commands: bool = True       # commandes locales : exit, reset, aide…
     confirm: str = "console"   # "console" (demande au clavier), "always" ou "never"
@@ -151,6 +152,12 @@ class Config:
         for key in ("commands", "acknowledge"):   # « non » ou "false" entre guillemets vaudraient vrai
             if not isinstance(raw.get(key, True), bool):
                 raise SeldonError(f"{source} : {key} doit valoir true ou false, pas {raw[key]!r}")
+        brain = raw.get("brain", "llamacpp")
+        backup = None
+        if isinstance(brain, dict) and "backup" in brain:
+            brain = dict(brain)
+            backup = brain.pop("backup")
+            backup = StageConfig.parse(backup, "brain.backup") if backup else None
         for key in sorted(set(map(str, raw)) - set(TOP_LEVEL)):   # faute de frappe : réglage ignoré sinon
             close = difflib.get_close_matches(key, TOP_LEVEL, n=1)
             log.warning("%s : clé « %s » inconnue, ignorée%s", source, key,
@@ -158,7 +165,8 @@ class Config:
         return cls(
             stt=StageConfig.parse(raw.get("stt", "text"), "stt"),
             speakers=StageConfig.parse(raw.get("speakers", "none"), "speakers"),
-            brain=StageConfig.parse(raw.get("brain", "llamacpp"), "brain"),
+            brain=StageConfig.parse(brain, "brain"),
+            brain_backup=backup,
             tts=StageConfig.parse(raw.get("tts", "console"), "tts"),
             actions=[StageConfig.parse(a, f"actions[{i + 1}]") for i, a in enumerate(actions)],
             memory=dict(memory),

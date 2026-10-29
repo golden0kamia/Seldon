@@ -6,7 +6,7 @@ Assistant vocal polyvalent, modulaire et local par défaut.
 micro ─► STT (faster-whisper + VAD) ─► identification du locuteur (Resemblyzer)
                                               │
                                               ▼
-          cerveau : LLM local (serveur llama.cpp `llama serve`, ou Ollama) ou Claude
+          cerveau : LLM local (llama.cpp, Ollama), Claude ou OpenAI (+ secours)
                                               │ appels d'outils
               ┌───────────────┬───────────────┼────────────────┐
               ▼               ▼               ▼                ▼
@@ -68,12 +68,32 @@ localhost`) ; les options ajoutées sont transmises (`./llama-serve.sh -c 16384`
 Pour une voix réactive, privilégier un modèle qui tient entièrement en VRAM
 et laisser `thinking: false`.
 
+Cerveaux en ligne : `engine: claude` (clé `ANTHROPIC_API_KEY`) ou
+`engine: openai` (clé `OPENAI_API_KEY`, modèle dans `options.model` ;
+`base_url` vise aussi un autre fournisseur compatible OpenAI). Un **cerveau de
+secours** se déclare sous `brain.backup`, au même format, ou dans l'interface
+(page Cerveau, case « Cerveau de secours ») :
+
+```yaml
+brain:
+  engine: claude
+  options: {model: claude-opus-5-5, effort: low}
+  backup:
+    engine: openai
+    options: {model: gpt-5.6-luna}
+```
+
+Si le principal ne démarre pas ou échoue avant d'avoir lancé une action
+(serveur arrêté, clé refusée, quota…), la phrase passe au secours ; le principal
+est réessayé 5 min plus tard. Chaque échange est recopié dans l'autre cerveau :
+la conversation continue sans perte de fil.
+
 Paquets système : `libportaudio2` (micro/haut-parleur), `espeak-ng` (seulement pour le TTS pyttsx3).
 
 ### Identifiants
 
-Les secrets (jeton Home Assistant, mots de passe Feishin et Nextcloud, clé API
-Anthropic) ne
+Les secrets (jeton Home Assistant, mots de passe Feishin et Nextcloud, clés API
+Anthropic et OpenAI) ne
 s'écrivent jamais dans `config.yaml` mais dans un fichier `.env` à côté de lui,
 ignoré par git :
 

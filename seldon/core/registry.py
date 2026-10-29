@@ -39,6 +39,7 @@ _BUILTINS: dict[str, dict[str, str]] = {
         "llamacpp": "seldon.brain.llamacpp",
         "ollama": "seldon.brain.ollama",
         "claude": "seldon.brain.claude",
+        "openai": "seldon.brain.openai",
     },
     "tts": {
         "console": "seldon.tts.console",

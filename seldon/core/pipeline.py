@@ -28,6 +28,7 @@ from typing import Any
 
 from seldon.actions.base import Action
 from seldon.brain.base import Brain
+from seldon.brain.fallback import FallbackBrain
 from seldon.brain.prompts import neutralize
 from seldon.config import Config
 from seldon.core import commands, registry, tags
@@ -130,6 +131,10 @@ class Assistant:
                 raise SeldonError(f"Création du moteur {category} « {stage.engine} » impossible : {describe(e)}") from e
 
         brain = build("brain", cfg.brain)
+        brain_kind = cfg.brain.engine
+        if cfg.brain_backup is not None:
+            brain = FallbackBrain(brain, build("brain", cfg.brain_backup))
+            brain_kind += f"+{cfg.brain_backup.engine}"   # état de conversation propre à ce couple
         memory_opts = dict(cfg.memory)
         enabled = memory_opts.pop("enabled", True)
         if not isinstance(enabled, bool):
@@ -138,8 +143,8 @@ class Assistant:
             memory = None
             if enabled:
                 registry.check_options(ConversationMemory, "la section", "memory",
-                                       {"brain": brain, "brain_kind": cfg.brain.engine, **memory_opts})
-                memory = ConversationMemory(brain, cfg.brain.engine, **memory_opts)
+                                       {"brain": brain, "brain_kind": brain_kind, **memory_opts})
+                memory = ConversationMemory(brain, brain_kind, **memory_opts)
         except (TypeError, ValueError) as e:
             raise SeldonError(f"Section « memory » invalide : {e}") from e
         return cls(

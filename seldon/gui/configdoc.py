@@ -116,3 +116,5 @@ def compact_stage(doc: CommentedMap, key: str) -> None:
     node = doc.get(key)
     if isinstance(node, CommentedMap) and "options" in node and not node["options"]:
         del node["options"]
+    if isinstance(node, CommentedMap) and isinstance(node.get("backup"), CommentedMap):
+        compact_stage(node, "backup")

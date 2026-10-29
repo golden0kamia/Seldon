@@ -43,7 +43,8 @@ log = logging.getLogger(__name__)
 CONNECT_TIMEOUT_S = 10   # serveur local : s'il ne répond pas vite, il est arrêté ou injoignable
 
 
-def _http_error(response: httpx.Response) -> tuple[str, str | None]:
+def _http_error(response: httpx.Response, server: str = "serveur llama",
+                key_hint: str = "vérifiez brain.options.api_key") -> tuple[str, str | None]:
     """Message (et piste) pour une erreur HTTP du serveur."""
     try:
         detail = response.json().get("error", {})
@@ -51,11 +52,11 @@ def _http_error(response: httpx.Response) -> tuple[str, str | None]:
     except ValueError:
         detail = response.text
     detail = redact(" ".join(detail.split())[:300])
-    message = f"Le serveur llama a refusé la requête (HTTP {response.status_code}) : {detail}"
+    message = f"Le {server} a refusé la requête (HTTP {response.status_code}) : {detail}"
     if "context" in detail.lower() and ("exceed" in detail.lower() or "size" in detail.lower()):
         return message, "conversation trop longue pour le contexte du modèle : dites « nouvelle », ou lancez le serveur avec un -c plus grand"
     if response.status_code in (401, 403):
-        return message, "vérifiez brain.options.api_key"
+        return message, key_hint
     if "tool" in detail.lower() or "jinja" in detail.lower():
         return message, "le modèle doit gérer les appels d'outils : lancez `llama serve` avec --jinja"
     return message, None
@@ -67,6 +68,10 @@ class _NoStreaming(Exception):
 
 @register("brain", "llamacpp")
 class LlamaCppBrain(Brain):
+    server = "serveur llama"                     # nom dans les messages d'erreur
+    key_hint = "vérifiez brain.options.api_key"   # piste pour une erreur 401/403
+    max_tokens_field = "max_tokens"             # OpenAI : max_completion_tokens
+
     def __init__(
         self,
         base_url: str = "http://127.0.0.1:9931/v1",
@@ -114,20 +119,20 @@ class LlamaCppBrain(Brain):
             raise SeldonError(f"Le serveur {self.base_url} a répondu HTTP {e.response.status_code} à /models",
                               "base_url doit pointer vers une API compatible OpenAI (se termine souvent par /v1)") from e
         except httpx.HTTPError as e:
-            raise SeldonError(f"Serveur llama injoignable ({self.base_url})",
+            raise SeldonError(f"{self.server.capitalize()} injoignable ({self.base_url})",
                               "lancez-le (`llama serve …`) ou corrigez brain.options.base_url") from e
         except (ValueError, KeyError, TypeError) as e:
             raise SeldonError(f"Réponse inattendue de {self.base_url}/models : ce n'est pas un serveur compatible OpenAI") from e
         ids = [m["id"] for m in models]
         if not ids:
-            raise SeldonError("Aucun modèle chargé sur le serveur llama", "lancez `llama serve` avec un modèle")
+            raise SeldonError(f"Aucun modèle disponible sur le {self.server}", "lancez `llama serve` avec un modèle")
         if self.model is None:
             loaded = [m["id"] for m in models if m.get("status", {}).get("value") == "loaded"]
             self.model = (loaded or ids or [None])[0]
         if self.model not in ids:
-            raise SeldonError(f"Modèle « {self.model} » absent du serveur llama",
+            raise SeldonError(f"Modèle « {self.model} » absent du {self.server}",
                               f"disponibles : {', '.join(ids)} (ou model: null pour le modèle chargé)")
-        log.info("Cerveau llama.cpp : %s", self.model)
+        log.info("Cerveau %s : %s", self.server, self.model)
 
     async def stop(self) -> None:
         if self.client is not None:
@@ -167,7 +172,7 @@ class LlamaCppBrain(Brain):
         body: dict[str, Any] = {
             "model": self.model,
             "messages": messages or [{"role": "system", "content": self.system}, *self.messages],
-            "max_tokens": max_tokens or self.max_tokens,
+            self.max_tokens_field: max_tokens or self.max_tokens,
         }
         if tools:
             body["tools"] = tools
@@ -180,11 +185,11 @@ class LlamaCppBrain(Brain):
     async def _post(self, body: dict[str, Any]) -> dict[str, Any]:
         response = await self.client.post("/chat/completions", json=body)
         if response.is_error:
-            raise SeldonError(*_http_error(response))
+            raise SeldonError(*_http_error(response, self.server, self.key_hint))
         try:
             return response.json()["choices"][0]["message"]
         except (ValueError, KeyError, IndexError, TypeError) as e:
-            raise SeldonError(f"Réponse illisible du serveur llama : {response.text[:200]}") from e
+            raise SeldonError(f"Réponse illisible du {self.server} : {response.text[:200]}") from e
 
     async def _stream(self, body: dict[str, Any], speech: SpeechStream) -> dict[str, Any]:
         """Lit la réponse en flux (SSE) ; les phrases du premier appel ``speak`` sont dites au fil de l'eau."""
@@ -193,7 +198,7 @@ class LlamaCppBrain(Brain):
         async with self.client.stream("POST", "/chat/completions", json={**body, "stream": True}) as response:
             if response.is_error:
                 await response.aread()
-                message, hint = _http_error(response)
+                message, hint = _http_error(response, self.server, self.key_hint)
                 if "stream" in message.lower():
                     raise _NoStreaming(message)
                 raise SeldonError(message, hint)
@@ -206,11 +211,11 @@ class LlamaCppBrain(Brain):
                 try:
                     chunk = json.loads(data)
                 except ValueError as e:
-                    raise SeldonError(f"Réponse illisible du serveur llama : {data[:200]}") from e
+                    raise SeldonError(f"Réponse illisible du {self.server} : {data[:200]}") from e
                 if chunk.get("error"):
                     error = chunk["error"]
                     detail = error.get("message", "") if isinstance(error, dict) else str(error)
-                    raise SeldonError(f"Le serveur llama a signalé une erreur : {redact(detail[:300])}")
+                    raise SeldonError(f"Le {self.server} a signalé une erreur : {redact(detail[:300])}")
                 for choice in chunk.get("choices") or []:
                     delta = choice.get("delta") or {}
                     if delta.get("content"):
@@ -285,7 +290,7 @@ class LlamaCppBrain(Brain):
                 if not calls:
                     return content or None
 
-                done = []
+                done, replies = [], []
                 for i, call in enumerate(calls):
                     fn = call.setdefault("function", {})
                     name = fn.get("name") or ""
@@ -303,8 +308,10 @@ class LlamaCppBrain(Brain):
                         result = ActionResult.error(bad_arguments(fn.get("arguments")))
                     else:
                         result = await execute(name, params)
-                    self.messages.extend(self._tool_messages(call["id"], result))
+                    replies.extend(self._tool_messages(call["id"], result))
                     done.append((name, result))
+                # Réponses « tool » d'abord, images ensuite : OpenAI exige qu'elles suivent l'appel sans interruption.
+                self.messages.extend(sorted(replies, key=lambda m: m["role"] != "tool"))
                 if any(r.images for _, r in done):
                     history.drop_old_images(self.messages, history.OPENAI, self.keep_images)
                 if ends_turn(actions, done):
