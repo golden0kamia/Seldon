@@ -23,7 +23,7 @@ from seldon.core.errors import describe
 from seldon.gui import configdoc, theme
 from seldon.gui.brainform import BackupEditor, BrainEditor
 from seldon.gui.fsutil import write_atomic
-from seldon.gui.plugins import MISSING, Param, PluginInfo, choices_from_comment, class_params, discover
+from seldon.gui.plugins import Param, PluginInfo, choices_from_comment, class_params, discover
 from seldon.gui.records import ConversationsView, RecordsView, SpeakersView
 from seldon.gui.widgets import FIXED_CHOICES, guard_wheel, hint_label, make_editor  # noqa: F401 (réexportés)
 
@@ -72,9 +72,6 @@ class OptionsForm(QWidget):
             row += 1
         if row == 0:
             self.grid.addWidget(hint_label("Aucune option : les valeurs par défaut du moteur s'appliquent."), row, 0, 1, 4)
-            row += 1
-        if self.extensible:
-            self._add_adder(row)
 
     def _set(self, key: str, value: Any) -> None:
         self.mapping[key] = value
@@ -112,36 +109,6 @@ class OptionsForm(QWidget):
         del self.mapping[key]
         self.on_change()
         self.rebuild()
-
-    def _add_adder(self, row: int) -> None:
-        box = guard_wheel(QComboBox(editable=True))
-        box.setAccessibleName("Nouvelle option")
-        box.lineEdit().setPlaceholderText("nouvelle option…")
-        missing = [k for k in self.known if k not in self.mapping]
-        for k in missing:
-            box.addItem(k)
-            box.setItemData(box.count() - 1, self.known[k].hint(), Qt.ItemDataRole.ToolTipRole)
-        box.setCurrentIndex(-1)
-        add = QPushButton("Ajouter")
-
-        def do_add() -> None:
-            key = box.currentText().strip()
-            if not key or key in self.mapping:
-                return
-            param = self.known.get(key)
-            default = param.default if param and param.default is not MISSING else None
-            self.mapping[key] = default
-            self.on_change()
-            self.rebuild()
-
-        add.clicked.connect(do_add)
-        box.lineEdit().returnPressed.connect(do_add)
-        line = QHBoxLayout()
-        line.setSpacing(theme.SPACE)
-        line.addWidget(box, 1)
-        line.addWidget(add)
-        line.addStretch(1)
-        self.grid.addLayout(line, row, 0, 1, 4)
 
 
 def _engine_combo(plugins: dict[str, PluginInfo], current: str) -> QComboBox:
