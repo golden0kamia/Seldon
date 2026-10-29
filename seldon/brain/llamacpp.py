@@ -1,9 +1,10 @@
 """Cerveau local via un serveur llama.cpp (``llama serve`` / ``llama-server``).
 
 Utilise l'API compatible OpenAI (``/v1/chat/completions``) avec appels d'outils.
-Le serveur doit déjà tourner, par exemple :
-
-    llama serve --hf-repo unsloth/qwen3.8-27B-GGUF:Q3_K_XL -c 65000
+Si le serveur (local) ne répond pas au démarrage, ``server_command`` est lancé
+(par défaut ``./llama-serve.sh``) et Seldon attend que le modèle soit prêt.
+Le serveur lancé ainsi continue de tourner après l'arrêt de Seldon : un
+redémarrage ne recharge pas le modèle. Sa sortie va dans ``server_log``.
 
 Fonctionne aussi avec tout autre serveur compatible OpenAI (vLLM, LM Studio…).
 
@@ -23,7 +24,12 @@ import asyncio
 import base64
 import json
 import logging
+import shlex
+import subprocess
+import time
+from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -41,6 +47,7 @@ from seldon.core.types import ActionResult, Utterance
 log = logging.getLogger(__name__)
 
 CONNECT_TIMEOUT_S = 10   # serveur local : s'il ne répond pas vite, il est arrêté ou injoignable
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}   # seul un serveur sur cette machine est lancé par Seldon
 
 
 def _http_error(response: httpx.Response, server: str = "serveur llama",
@@ -88,8 +95,14 @@ class LlamaCppBrain(Brain):
         stream: bool = True,                # dit chaque phrase de la réponse dès qu'elle est écrite
         extra_instructions: str = "",
         timeout_s: float = 300,
+        server_command: str | None = "./llama-serve.sh",   # lancé si le serveur local ne répond pas ; null : jamais
+        server_log: str = "llama-serve.log",   # sortie du serveur lancé par Seldon
+        server_start_timeout_s: float = 600,   # attente du modèle (chargement, voire téléchargement)
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        self.server_command = server_command
+        self.server_log = server_log
+        self.server_start_timeout_s = server_start_timeout_s
         self.model = model
         self.api_key = api_key
         self.vision = vision
@@ -114,7 +127,13 @@ class LlamaCppBrain(Brain):
         self.client = httpx.AsyncClient(base_url=self.base_url, headers=headers,
                                         timeout=httpx.Timeout(self.timeout_s, connect=min(CONNECT_TIMEOUT_S, self.timeout_s)))
         try:
-            models = (await self.client.get("/models")).raise_for_status().json()["data"]
+            try:
+                response = await self.client.get("/models")
+            except httpx.ConnectError:
+                if not self._can_launch():
+                    raise
+                response = await self._launch_server()
+            models = response.raise_for_status().json()["data"]
         except httpx.HTTPStatusError as e:
             raise SeldonError(f"Le serveur {self.base_url} a répondu HTTP {e.response.status_code} à /models",
                               "base_url doit pointer vers une API compatible OpenAI (se termine souvent par /v1)") from e
@@ -133,6 +152,44 @@ class LlamaCppBrain(Brain):
             raise SeldonError(f"Modèle « {self.model} » absent du {self.server}",
                               f"disponibles : {', '.join(ids)} (ou model: null pour le modèle chargé)")
         log.info("Cerveau %s : %s", self.server, self.model)
+
+    def _can_launch(self) -> bool:
+        return bool(self.server_command) and urlsplit(self.base_url).hostname in LOCAL_HOSTS
+
+    async def _launch_server(self) -> httpx.Response:
+        """Lance ``server_command`` et attend que le serveur réponde à /models."""
+        log.info("%s arrêté : lancement de %s (sortie dans %s)", self.server.capitalize(), self.server_command, self.server_log)
+        try:
+            with open(self.server_log, "ab") as out:
+                # Nouvelle session : le serveur survit à l'arrêt de Seldon (et à Ctrl+C dans son terminal).
+                proc = subprocess.Popen(shlex.split(self.server_command), stdin=subprocess.DEVNULL, stdout=out,
+                                        stderr=subprocess.STDOUT, start_new_session=True)
+        except OSError as e:
+            raise SeldonError(f"Impossible de lancer le {self.server} ({self.server_command}) : {e.strerror or e}",
+                              "corrigez brain.options.server_command (chemin relatif au dossier de config.yaml)") from e
+        deadline = time.monotonic() + self.server_start_timeout_s
+        while True:
+            await asyncio.sleep(1)
+            if proc.poll() is not None:
+                raise SeldonError(f"Le {self.server} s'est arrêté au démarrage (code {proc.returncode}) : {self._log_tail()}",
+                                  f"voir {Path(self.server_log).resolve()}")
+            try:
+                response = await self.client.get("/models")
+            except httpx.HTTPError:
+                response = None
+            if response is not None and response.status_code != 503:   # 503 : modèle en cours de chargement
+                log.info("%s prêt", self.server.capitalize())
+                return response
+            if time.monotonic() > deadline:
+                raise SeldonError(f"Le {self.server} n'est pas prêt après {self.server_start_timeout_s:.0f} s",
+                                  f"il continue de démarrer ; voir {Path(self.server_log).resolve()}")
+
+    def _log_tail(self) -> str:
+        try:
+            lines = Path(self.server_log).read_text(encoding="utf-8", errors="replace").strip().splitlines()
+        except OSError:
+            return "sortie illisible"
+        return redact(" | ".join(lines[-3:])[-300:]) or "aucune sortie"
 
     async def stop(self) -> None:
         if self.client is not None:

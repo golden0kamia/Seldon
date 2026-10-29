@@ -8,6 +8,7 @@ from seldon.actions.base import Action
 from seldon.actions.speak import Speak
 from seldon.brain.llamacpp import LlamaCppBrain
 from seldon.brain.prompts import STEP_LIMIT_REPLY
+from seldon.core.errors import SeldonError
 from seldon.core.pipeline import Assistant
 from seldon.core.types import ActionResult, Image, Utterance
 from seldon.speakers.base import NoSpeakerId
@@ -277,3 +278,46 @@ async def test_warmup_caches_system_prompt_and_tools():
     await brain.warmup(list(a.actions.values()))
     assert bodies[0]["max_tokens"] == 1 and bodies[0]["messages"][0]["content"] == brain.system
     assert bodies[0]["tools"] == brain._tools(list(a.actions.values()))
+
+
+def fake_server(answers):
+    """Transport : ConnectError tant que ``answers`` commence par None, puis les réponses à /models."""
+    def handler(request):
+        answer = answers.pop(0) if len(answers) > 1 else answers[0]
+        if answer is None:
+            raise httpx.ConnectError("refusé", request=request)
+        return answer
+    return httpx.MockTransport(handler)
+
+
+@pytest.fixture
+def no_wait(monkeypatch):
+    real = asyncio.sleep
+    monkeypatch.setattr(asyncio, "sleep", lambda s: real(0))
+
+
+async def test_launches_server_when_down_and_waits_for_model(tmp_path, no_wait):
+    script = tmp_path / "serve.sh"
+    script.write_text("#!/bin/sh\nexec sleep 2\n")
+    script.chmod(0o755)
+    brain = LlamaCppBrain(server_command=str(script), server_log=str(tmp_path / "out.log"))
+    brain._transport = fake_server([None, None, httpx.Response(503, json={}), httpx.Response(200, json=MODELS)])
+    await brain.start()
+    assert brain.model == "b"
+    assert (tmp_path / "out.log").exists()
+
+
+async def test_server_that_exits_is_reported(tmp_path, no_wait):
+    brain = LlamaCppBrain(server_command="sh -c 'echo modèle introuvable; exit 1'", server_log=str(tmp_path / "out.log"))
+    brain._transport = fake_server([None])
+    with pytest.raises(SeldonError, match="arrêté au démarrage.*modèle introuvable"):
+        await brain.start()
+
+
+@pytest.mark.parametrize("opts", [{"server_command": None}, {"base_url": "http://192.168.1.5:9931/v1"}])
+async def test_no_launch_without_command_or_for_remote_server(opts, tmp_path):
+    brain = LlamaCppBrain(server_log=str(tmp_path / "out.log"), **opts)
+    brain._transport = fake_server([None])
+    with pytest.raises(SeldonError, match="injoignable"):
+        await brain.start()
+    assert not (tmp_path / "out.log").exists()

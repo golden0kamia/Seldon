@@ -45,6 +45,7 @@ brain:
   engine: llamacpp        # serveur local `llama serve` (llama.cpp). Alternatives : ollama, claude, openai
   options:
     base_url: http://127.0.0.1:9931/v1
+    server_command: ./llama-serve.sh   # lancé si le serveur ne répond pas ; null : jamais
     model: null           # null = modèle chargé sur le serveur
     vision: true          # true si le modèle lit les images (caméra)
     thinking: false       # raisonnement du modèle : plus lent, parfois plus juste

@@ -48,6 +48,7 @@ class OpenAIBrain(LlamaCppBrain):
             vision=vision, thinking=None, temperature=temperature, max_tokens=max_tokens, max_steps=max_steps,
             max_history_messages=max_history_messages, max_history_chars=max_history_chars,
             keep_images=keep_images, stream=stream, extra_instructions=extra_instructions, timeout_s=timeout_s,
+            server_command=None,
         )
         self.reasoning_effort = reasoning_effort
 

@@ -82,7 +82,7 @@ def test_log_error_hides_traceback(caplog):
 async def test_start_failure_names_the_stage():
     from seldon.core.pipeline import Assistant
 
-    cfg = Config.parse("stt: text\ntts: console\nbrain: {engine: llamacpp, options: {base_url: 'http://127.0.0.1:9'}}\n"
+    cfg = Config.parse("stt: text\ntts: console\nbrain: {engine: llamacpp, options: {base_url: 'http://127.0.0.1:9', server_command: null}}\n"
                        "memory: {enabled: false}\nactions: [speak]\n")
     a = Assistant.from_config(cfg)
     with pytest.raises(SeldonError, match="cerveau") as e:

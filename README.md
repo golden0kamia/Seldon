@@ -60,8 +60,11 @@ python3 -m venv .venv
 ```
 
 Le cerveau par défaut (`llamacpp`) se connecte à un serveur `llama serve`
-déjà lancé (`http://127.0.0.1:9931/v1`, API compatible OpenAI, avec appels
-d'outils). Le modèle chargé sur le serveur est utilisé automatiquement.
+(`http://127.0.0.1:9931/v1`, API compatible OpenAI, avec appels d'outils).
+Le modèle chargé sur le serveur est utilisé automatiquement. S'il ne répond
+pas au démarrage, Seldon lance `./llama-serve.sh` (option `server_command`,
+`null` pour ne jamais le lancer), attend que le modèle soit chargé et laisse
+le serveur tourner après son arrêt ; sa sortie va dans `llama-serve.log`.
 `./llama-serve.sh` le lance avec les réglages de Seldon : il n'écoute que la
 machine elle-même et refuse les pages web d'autres origines (`--cors-origins
 localhost`) ; les options ajoutées sont transmises (`./llama-serve.sh -c 16384`).
