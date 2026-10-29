@@ -922,7 +922,7 @@ class Masthead(QWidget):
         for i, (text, tip) in enumerate((("⚙  PARAMÈTRES", "Réglages de config.yaml (Ctrl+1)"),
                                         ("✎  ÉDITEUR", "Fichiers et éditeur de texte (Ctrl+2)"),
                                         ("▤  JOURNAL", "Lancer Seldon et suivre ses logs (Ctrl+3)"),
-                                        ("◈  STRUCTURE", "Modules, fonctions et leurs liens (Ctrl+4)"))):
+                                        ("◈  STRUCTURE", "Schéma des sous-systèmes et de leurs échanges (Ctrl+4)"))):
             b = QToolButton(text=text, toolTip=tip, checkable=True, autoExclusive=True, objectName="mode")
             b.setAccessibleName(text.split(maxsplit=1)[1].capitalize())
             b.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)   # jamais rognés en « … »

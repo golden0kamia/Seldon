@@ -649,52 +649,31 @@ def test_journal_ignores_tags_without_launch_token(window):
     assert r.pending and "jeton" not in r.log.toPlainText() and "[confirmation] Lancer ls" in r.log.toPlainText()
 
 
-def test_structure_analysis_follows_imports_calls_and_inheritance(tmp_path):
-    from seldon.gui.structure import analyze
+def test_structure_diagram_matches_the_code():
+    from seldon.gui.plugins import discover
+    from seldon.gui.structure import BLOCKS, LINKS, PACKAGE_DIR
 
-    pkg = tmp_path / "pkg"
-    (pkg / "core").mkdir(parents=True)
-    (pkg / "__init__.py").write_text("", encoding="utf-8")
-    (pkg / "core" / "__init__.py").write_text("from .base import Base\n", encoding="utf-8")
-    (pkg / "core" / "base.py").write_text(
-        '"""Fondations."""\nclass Base:\n    def run(self):\n        return helper()\n\n'
-        "def helper():\n    return 1\n", encoding="utf-8")
-    (pkg / "app.py").write_text(
-        "from pkg.core import Base\nfrom pkg.core import base as b\n\n"
-        "@register(\"brain\", \"demo\")\nclass App(Base):\n    def start(self):\n"
-        "        self.run()\n        super().run()\n        b.helper()\n", encoding="utf-8")
-    (pkg / "broken.py").write_text("def (:\n", encoding="utf-8")
-
-    st = analyze(pkg)
-    app, base = st.modules["pkg.app"], st.modules["pkg.core.base"]
-    assert app.imports == {"pkg.core.base"} and "pkg.app" in base.imported_by   # ré-export suivi jusqu'à la définition
-    assert base.doc == "Fondations." and st.modules["pkg.broken"].error
-    cls = st.symbols["pkg.app.App"]
-    assert cls.plugin == "brain/demo" and cls.bases == ["pkg.core.base.Base"]
-    assert st.symbols["pkg.app.App.start"].calls == {"pkg.core.base.Base.run", "pkg.core.base.helper"}
-    assert "pkg.app.App.start" in st.symbols["pkg.core.base.helper"].called_by
-    assert st.packages()[0] == "pkg" and st.search("helper") == {"pkg.core.base"}
+    keys = {b.key for b in BLOCKS}
+    assert len(keys) == len(BLOCKS) and len({(b.col, b.row) for b in BLOCKS}) == len(BLOCKS)
+    assert all(link.src in keys and link.dst in keys for link in LINKS)
+    assert all((PACKAGE_DIR / b.path).is_file() for b in BLOCKS if b.path)
+    found = discover()
+    assert {b.category for b in BLOCKS if b.category} == set(found)   # chaque catégorie de plugins a son bloc
 
 
-def test_structure_page_maps_package_and_opens_definitions(window):
+def test_structure_page_highlights_links_and_opens_code(window):
     from seldon.gui.window import EDITOR_PAGE, STRUCTURE_PAGE
 
     panel = window.structure
-    assert panel.structure is None   # analyse seulement à l'affichage
+    assert not panel.loaded   # moteurs lus seulement à l'affichage
     window.show_page(STRUCTURE_PAGE)
-    st = panel.structure
-    assert "seldon.core.pipeline" in st.modules and "seldon.core.pipeline" in panel.map.boxes
+    view = panel.view
     assert window.masthead.mode_buttons[STRUCTURE_PAGE].isChecked()
+    assert "whisper" in view.blocks["stt"].engines
 
-    panel.search.setText("from_config")
-    panel.search.returnPressed.emit()
-    assert panel.selected == "seldon.core.pipeline"
-    assert panel.map.boxes["seldon.core.events"].state == "out"
-    assert panel.map.boxes["seldon.__main__"].state == "in"
-    item = panel.tree.currentItem()
-    assert item is not None and "from_config" in item.text(0)
-    panel._item_activated(item)
+    panel.select("brain")
+    assert view.blocks["brain"].state == "sel" and view.blocks["pipeline"].state == "near"
+    assert view.blocks["mic"].state == "dim" and "Cerveau" in panel.detail.text()
+    panel._open("pipeline")
     assert window.pages.currentIndex() == EDITOR_PAGE
-    tab = window.editors.current()
-    assert tab.path == st.modules["seldon.core.pipeline"].path
-    assert "def from_config" in tab.editor.textCursor().block().text()
+    assert window.editors.current().path == panel.root / "core" / "pipeline.py"

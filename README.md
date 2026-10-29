@@ -172,15 +172,11 @@ Trois pages, choisies en haut de la fenêtre :
   Paramètres, faire défiler la page ne modifie jamais un champ, et
   `config.yaml` est validé puis écrit de façon atomique ; s'il est illisible,
   l'erreur s'affiche avec sa ligne et sa colonne.
-- **◈ Structure** (Ctrl+4) : carte du code de Seldon, lue par AST sans rien
-  importer. Les modules sont rangés par paquet, des utilisateurs (interface,
-  point d'entrée) aux fondations (`core`). Un clic sur un module éclaire ce
-  qu'il importe (vert) et ce qui l'importe (ambre) ; à droite, ses classes,
-  fonctions et méthodes, avec héritage, plugins `@register` et appels dans
-  les deux sens (« → appelle », « ← appelé par »). Un double-clic ouvre le
-  code à la bonne ligne. La recherche trouve un module ou une définition
-  (Entrée : résultat suivant). Les appels sur des objets connus seulement à
-  l'exécution (`self.brain.respond()`) ne sont pas suivis.
+- **◈ Structure** (Ctrl+4) : schéma bloc des sous-systèmes de Seldon (micro,
+  reconnaissance vocale, pipeline, cerveau, actions, synthèse vocale, mémoire…)
+  et de ce qu'ils s'échangent, avec les moteurs disponibles dans chacun. Un
+  clic sur un bloc éclaire ses liens et le décrit ; un double-clic ouvre son
+  code.
 
 Thème néomorphique « cassette futurism », accent vert, en variante claire ou
 sombre (Affichage › Thème, bouton ☾/☀ ou Ctrl+Maj+L ; « Automatique » suit le
@@ -450,7 +446,7 @@ haut-parleurs forts, monter `barge_in_db` (ex. -25) ou mettre
 | `seldon/actions/` | Outils du cerveau | `Action.run(params, ctx) -> ActionResult` |
 | `seldon/tts/` | Texte → parole | `TTSEngine.speak(text)` |
 | `seldon/core/` | Pipeline, registre de plugins, bus d'événements, mémoire, écriture privée des fichiers (`storage.py`), balises lues par l'interface (`tags.py`) | |
-| `seldon/gui/` | Interface Qt 6 (paramètres, voix et conversations enregistrées, fichiers, éditeur, journal, structure du code, thème) | lit les plugins et la structure par AST, sans les importer |
+| `seldon/gui/` | Interface Qt 6 (paramètres, voix et conversations enregistrées, fichiers, éditeur, journal, schéma des sous-systèmes, thème) | lit les plugins par AST, sans les importer |
 
 ### Ajouter une action
 

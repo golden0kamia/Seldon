@@ -143,7 +143,7 @@ class MainWindow(QMainWindow):
         view.addAction(act("⚙ Paramètres", lambda: self.show_page(SETTINGS_PAGE), "Ctrl+1"))
         view.addAction(act("✎ Éditeur", lambda: self.show_page(EDITOR_PAGE), "Ctrl+2"))
         view.addAction(act("▤ Journal", lambda: self.show_page(LOGS_PAGE), "Ctrl+3"))
-        view.addAction(act("◈ Structure du code", lambda: self.show_page(STRUCTURE_PAGE), "Ctrl+4"))
+        view.addAction(act("◈ Structure", lambda: self.show_page(STRUCTURE_PAGE), "Ctrl+4"))
         view.addSeparator()
         self.show_hidden = act("Afficher les fichiers cachés", self.files.set_show_hidden)
         self.show_hidden.setCheckable(True)
@@ -182,8 +182,8 @@ class MainWindow(QMainWindow):
         elif index == LOGS_PAGE:
             (self.runner.input if self.runner.input.isEnabled() else self.runner.log).setFocus()
         elif index == STRUCTURE_PAGE:
-            self.structure.ensure_loaded()   # analyse du code au premier affichage seulement
-            self.structure.search.setFocus()
+            self.structure.ensure_loaded()   # moteurs lus au premier affichage seulement
+            self.structure.view.setFocus()
         else:
             self.settings.nav.setFocus()
         self._update_status()
