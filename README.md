@@ -191,6 +191,9 @@ Trois pages, choisies en haut de la fenêtre :
   participants, thèmes, demandes, dernière réponse — calculé localement, sans
   le cerveau) ou la **transcription** complète. Les deux listes suivent leur
   dossier (`voices_dir`, `memory.dir`) et se mettent à jour d'elles-mêmes.
+  Sur les pages **Tools** et **MCP**, le bouton ✎ de chaque entrée ouvre son
+  code dans l'Éditeur, comme celui des **Skills** ouvre leur `SKILL.md`. Une
+  option se retire dans le YAML (« Ouvrir le YAML »), pas depuis le formulaire.
 - **✎ Éditeur** (Ctrl+2) : arborescence des fichiers (dossier Seldon, `data/`,
   `cwd` des actions, dossiers récents ; création, renommage, corbeille) et
   éditeur à onglets, jamais vide (document « Sans titre » par défaut).

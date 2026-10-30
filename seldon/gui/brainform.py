@@ -173,7 +173,7 @@ class _Fetch(QObject):
 # --- formulaire ------------------------------------------------------------------
 
 class _Section(QWidget):
-    """Grille libellé / champ / aide / ✕ pour une liste d'options."""
+    """Grille libellé / champ / aide pour une liste d'options."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -185,12 +185,10 @@ class _Section(QWidget):
         self.grid.setColumnStretch(2, 4)
         self.rows = 0
 
-    def add(self, label: QLabel, editor: QWidget, hint: str, reset: QWidget | None) -> None:
+    def add(self, label: QLabel, editor: QWidget, hint: str) -> None:
         self.grid.addWidget(label, self.rows, 0)
         self.grid.addWidget(editor, self.rows, 1)
         self.grid.addWidget(hint_label(hint), self.rows, 2)
-        if reset is not None:
-            self.grid.addWidget(reset, self.rows, 3)
         self.rows += 1
 
 
@@ -206,7 +204,6 @@ class BrainEditor(QWidget):
         self.fetch = _Fetch(self)
         self.fetch.done.connect(self._models_fetched)
         self.advanced_open = False
-        self.resets: dict[str, QToolButton] = {}
 
         self.combo = guard_wheel(QComboBox())
         self.combo.setAccessibleName("Moteur")
@@ -257,13 +254,6 @@ class BrainEditor(QWidget):
         self.on_change()
         if key == "auth":   # clé API ou compte : la ligne de connexion change
             self.rebuild()
-        elif key in self.resets:   # pas de reconstruction : le champ garde le focus pendant la saisie
-            self.resets[key].setEnabled(True)
-
-    def _reset(self, key: str) -> None:
-        self.options.pop(key, None)
-        self.on_change()
-        self.rebuild()
 
     def _engine_changed(self, engine: str | None) -> None:
         if not engine or engine == self.engine:
@@ -281,7 +271,6 @@ class BrainEditor(QWidget):
             item = self.body.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        self.resets = {}
         info = self.plugins.get(self.engine)
         comment = configdoc.comment(self.node, "engine")
         self.doc.setText((info.doc if info else "Plugin externe : options libres (YAML).")
@@ -303,7 +292,7 @@ class BrainEditor(QWidget):
             label = QLabel("compte")
             label.setFont(theme.mono_font(10))
             conn.add(label, QLabel("abonnement claude.ai, via Claude Code"),
-                     "connexion : claude auth login (terminal) ; « Lister » la vérifie", None)
+                     "connexion : claude auth login (terminal) ; « Lister » la vérifie")
         elif self.engine in ENV_KEYS:
             self._add_key_row(conn)
         if "model" in params or "model" in self.options:
@@ -348,14 +337,6 @@ class BrainEditor(QWidget):
         label.setToolTip(param.hint() if param else "Option inconnue pour ce moteur (erreur au démarrage).")
         return label
 
-    def _reset_button(self, key: str) -> QToolButton:
-        b = QToolButton(text="✕", toolTip="Revenir à la valeur par défaut", autoRaise=True)
-        b.setAccessibleName(f"Valeur par défaut pour {key}")
-        b.setEnabled(key in self.options)
-        b.clicked.connect(lambda _=False, k=key: self._reset(k))
-        self.resets[key] = b
-        return b
-
     def _add_row(self, section: _Section, key: str) -> None:
         param = self.params.get(key)
         value = self.options[key] if key in self.options else self._default(key)
@@ -368,7 +349,7 @@ class BrainEditor(QWidget):
         editor = make_editor(value, choices, lambda v, k=key: self._set(k, v))
         label = self._label(key, param is not None or not self.params)
         editor.setToolTip(label.toolTip())
-        section.add(label, editor, comment, self._reset_button(key))
+        section.add(label, editor, comment)
 
     def _add_model_row(self, section: _Section) -> None:
         value = self.options.get("model", self._default("model"))
@@ -389,7 +370,7 @@ class BrainEditor(QWidget):
         h.addWidget(fetch)
         self.model_box = box
         param = self.params.get("model")
-        section.add(self._label("model"), line, param.comment if param else "", self._reset_button("model"))
+        section.add(self._label("model"), line, param.comment if param else "")
 
     def _add_key_row(self, section: _Section) -> None:
         name = ENV_KEYS[self.engine]
@@ -422,7 +403,7 @@ class BrainEditor(QWidget):
         h.addWidget(save)
         label = QLabel("clé API")
         label.setFont(theme.mono_font(10))
-        section.add(label, line, f"{name} dans .env" + ("" if present else " — absente"), None)
+        section.add(label, line, f"{name} dans .env" + ("" if present else " — absente"))
 
     def _show_status(self, text: str, error: bool = False) -> None:
         self.status.setText(text)

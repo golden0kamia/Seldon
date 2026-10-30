@@ -699,7 +699,12 @@ def test_brain_form_follows_engine_and_keeps_keys_out_of_config(window, tmp_path
     brain._set("max_steps", 7)
     brain._engine_changed("openai")
     assert brain.engine == "openai" and "max_steps" not in brain.options   # options mises de côté
-    assert "reasoning_effort" in brain.resets and "thinking" not in brain.resets
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QLabel, QToolButton
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)   # formulaire llamacpp détruit
+    labels = {l.text() for l in brain.findChildren(QLabel)}
+    assert "reasoning_effort" in labels and "thinking" not in labels
+    assert not any(b.text() == "✕" for b in brain.findChildren(QToolButton))   # pas de « valeur par défaut »
     brain._engine_changed("llamacpp")
     assert brain.options["max_steps"] == 7                                  # retrouvées au retour
 
@@ -779,3 +784,19 @@ def test_skills_page_creates_enables_and_opens_a_skill(window, tmp_path):
     assert window.pages.currentIndex() == EDITOR_PAGE and window.editors.current().path == file.resolve()
     assert s.dirty and s.save()
     assert Config.load(tmp_path / "config.yaml").skills[-1] == "courses"
+
+
+def test_tools_and_mcp_pages_open_plugin_code(window):
+    from PySide6.QtWidgets import QToolButton
+
+    from seldon.gui.settings import ActionsPage, OptionsForm
+    from seldon.gui.window import EDITOR_PAGE
+
+    s = window.settings
+    page = s.pages.widget(6).findChild(ActionsPage)   # …, Tools, MCP, Skills
+    edit = next(b for b in page.findChildren(QToolButton) if b.accessibleName() == "Ouvrir le code : speak")
+    edit.click()
+    assert window.pages.currentIndex() == EDITOR_PAGE
+    assert window.editors.current().path == s.plugins["tools"]["speak"].path.resolve()
+    assert not any(b.accessibleName().startswith("Retirer l'option")   # plus de ✕ sur les options
+                   for form in s.findChildren(OptionsForm) for b in form.findChildren(QToolButton))

@@ -81,7 +81,7 @@ class OptionsForm(QWidget):
             self._add_row(row, str(key))
             row += 1
         if row == 0:
-            self.grid.addWidget(hint_label("Aucune option : les valeurs par défaut du moteur s'appliquent."), row, 0, 1, 4)
+            self.grid.addWidget(hint_label("Aucune option : les valeurs par défaut du moteur s'appliquent."), row, 0, 1, 3)
 
     def _set(self, key: str, value: Any) -> None:
         self.mapping[key] = value
@@ -109,16 +109,6 @@ class OptionsForm(QWidget):
         self.grid.addWidget(label, row, 0)
         self.grid.addWidget(editor, row, 1)
         self.grid.addWidget(hint_label(hint), row, 2)
-        if self.extensible:
-            remove = QToolButton(text="✕", toolTip="Retirer l'option (valeur par défaut du moteur)", autoRaise=True)
-            remove.setAccessibleName(f"Retirer l'option {key}")
-            remove.clicked.connect(lambda _=False, k=key: self._remove(k))
-            self.grid.addWidget(remove, row, 3)
-
-    def _remove(self, key: str) -> None:
-        del self.mapping[key]
-        self.on_change()
-        self.rebuild()
 
 
 def _engine_combo(plugins: dict[str, PluginInfo], current: str) -> QComboBox:
@@ -201,7 +191,9 @@ class StageEditor(QWidget):
 
 
 class ActionsPage(QWidget):
-    """Liste de tools ou de serveurs MCP (``{engine, options}``), avec leurs options."""
+    """Liste de tools ou de serveurs MCP (``{engine, options}``), avec leurs options et un bouton pour éditer leur code."""
+
+    open_requested = Signal(Path)
 
     def __init__(self, actions: CommentedSeq, plugins: dict[str, PluginInfo], on_change: Callable[[], None],
                  hint: str = "", noun: str = "l'action") -> None:
@@ -245,6 +237,13 @@ class ActionsPage(QWidget):
                 b.setAccessibleName(f"{tip} : {node.get('engine', '')}")
                 b.clicked.connect(slot)
                 tools.addWidget(b)
+            info = self.plugins.get(str(node.get("engine", "")))
+            file = info.path if info else None
+            edit = QToolButton(text="✎", toolTip=f"Ouvrir {file.name}" if file else "Code introuvable",
+                               autoRaise=True, enabled=bool(file and file.is_file()))
+            edit.setAccessibleName(f"Ouvrir le code : {node.get('engine', '')}")
+            edit.clicked.connect(lambda _=False, f=file: self.open_requested.emit(f))
+            tools.insertWidget(tools.count() - 1, edit)   # avant « Retirer », comme pour les skills
             v.addLayout(tools)
             v.addWidget(StageEditor(node, self.plugins, self.on_change, reserve=False, choose=False))
             self.lay.addWidget(box)
@@ -540,7 +539,9 @@ class SettingsPanel(QWidget):
             seq = self.doc.get(key)
             if not isinstance(seq, CommentedSeq):
                 seq = self.doc[key] = CommentedSeq(seq or default)
-            self._page(title, ActionsPage(seq, self.plugins.get(key, {}), self._changed, intro, noun))
+            page = ActionsPage(seq, self.plugins.get(key, {}), self._changed, intro, noun)
+            page.open_requested.connect(self.open_requested.emit)
+            self._page(title, page)
         skill_page = SkillsPage(self.doc, self._data_dir(None, skills.SKILLS_DIR), self._changed)
         skill_page.open_requested.connect(self.open_requested.emit)
         self._page("Skills", skill_page)
