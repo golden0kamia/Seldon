@@ -28,7 +28,7 @@ stt:
     vad: silero
     silence_ms: 700       # silence qui termine une phrase
     wake_words: ["Seldon"]   # ne réagit qu'à l'appel (puis follow_up_s) ; null = écoute tout
-    wake_variants: data/wake_words.json   # entraîner : python -m seldon.tools.wakeword
+    wake_variants: data/wake_words.json   # entraîner : python -m seldon.cli.wakeword
     barge_in: true        # on peut couper la parole à Seldon (« stop », « attends »…)
     barge_in_db: -35      # niveau minimal d'une interruption ; monter si l'écho des HP le déclenche
 
@@ -36,7 +36,7 @@ speakers:
   engine: resemblyzer     # "none" pour désactiver
   options:
     voices_dir: data/voices
-    threshold: 0.75       # enregistrer une voix : python -m seldon.tools.enroll Bastien
+    threshold: 0.75       # enregistrer une voix : python -m seldon.cli.enroll Bastien
     unknown_memory_s: 600 # une voix inconnue reste enregistrable 10 min (action « voix »)
     adapt_threshold: 0.85 # phrase reconnue avec ce score : affine l'empreinte (null = jamais)
     max_samples: 40       # échantillons gardés par voix (les plus récents)
@@ -66,7 +66,7 @@ tts:
     voice: fr_FR-tom-medium   # voix masculine ; autre : fr_FR-upmc-medium + speaker_id 1 (pierre)
     speed: 1.15            # 1.0 = normal ; 1.25 = 25 % plus rapide
 
-actions:
+tools:                    # actions en Python (seldon/tools)
   - speak
   - conversations         # retrouver / reprendre une conversation passée à la voix
   - voix                  # demande son nom à une voix inconnue et l'enregistre
@@ -87,6 +87,13 @@ actions:
       backend: auto       # auto | remote | mpris
       timeout: 10
       # identifiants : FEISHIN_USERNAME / FEISHIN_PASSWORD dans le fichier .env
+  - engine: desktop       # contrôle du PC : notifications lues, luminosité, ne pas déranger…
+    options:
+      read_notifications: true
+      ignore_apps: [Seldon]
+      max_per_minute: 6
+
+mcp:                      # serveurs MCP : leurs outils sont proposés au cerveau (seldon/mcp)
   - engine: home_assistant   # domotique via le serveur MCP de Home Assistant
     options:
       url: http://192.168.1.105:8123/api/mcp
@@ -99,8 +106,6 @@ actions:
       url: http://127.0.0.1:8000/mcp
       apps: [notes, calendar, contacts]   # ajouter webdav (fichiers), deck, tables… ; null = toutes
       auth: none          # le serveur MCP détient le mot de passe d'application (voir README)
-  - engine: desktop       # contrôle du PC : notifications lues, luminosité, ne pas déranger…
-    options:
-      read_notifications: true
-      ignore_apps: [Seldon]
-      max_per_minute: 6
+
+skills:                   # consignes chargées à la demande : skills/<nom>/SKILL.md
+  - bilan-du-matin

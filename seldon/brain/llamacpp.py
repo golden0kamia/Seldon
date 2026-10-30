@@ -33,9 +33,9 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from seldon.actions.base import Action
 from seldon.brain import history
 from seldon.brain.base import ActionExecutor, Brain, ends_turn
+from seldon.core.action import Action
 from seldon.brain.prompts import (
     LOCAL_RULES, STEP_LIMIT_REPLY, SYSTEM_PROMPT, bad_arguments, strip_thinking, tool_arguments, user_message,
 )

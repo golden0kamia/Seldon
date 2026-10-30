@@ -19,7 +19,7 @@ administrateurs du terminal.
 
 Exemple ``config.yaml`` :
 
-    actions:
+    tools:
       - engine: claude_code
         options:
           cwd: ~/Documents
@@ -38,7 +38,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
-from seldon.actions.base import Action
+from seldon.core.action import Action
 from seldon.core.registry import register
 from seldon.core.types import ActionContext, ActionResult
 
@@ -64,7 +64,7 @@ async def _read(stream: asyncio.StreamReader, limit: int) -> tuple[bytes, bool]:
     return b"".join(chunks), size > limit
 
 
-@register("actions", "claude_code")
+@register("tools", "claude_code")
 class ClaudeCode(Action):
     name = "claude_code"
     acknowledgement = ("Compris, je transmets à Claude Code.", "Je confie ça à Claude Code.",

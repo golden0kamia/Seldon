@@ -22,7 +22,7 @@ contient un mot de ``confirm_words`` (suppression, déplacement, envoi, partage�
 
 Exemple ``config.yaml`` :
 
-    actions:
+    mcp:
       - engine: nextcloud
         options:
           url: http://127.0.0.1:8000/mcp
@@ -35,8 +35,8 @@ import base64
 import os
 from typing import Any
 
-from seldon.actions.mcp import MCPAction, _args_summary
 from seldon.core.registry import register
+from seldon.mcp.base import MCPAction, _args_summary
 
 AUTH_MODES = ("none", "basic", "bearer")
 # application -> préfixe de ses outils, quand il diffère de « nc_<app>_ » (deck_…, talk_…)
@@ -44,7 +44,7 @@ TOOL_PREFIXES = {"sharing": "nc_share_", "shopping_list": "nc_shopping_", "deck"
                  "talk": "talk_", "collectives": "collectives_"}
 
 
-@register("actions", "nextcloud")
+@register("mcp", "nextcloud")
 class Nextcloud(MCPAction):
     name = "nextcloud"
     label = "Nextcloud"

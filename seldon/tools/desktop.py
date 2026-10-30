@@ -36,7 +36,7 @@ en mémoire sans être lues.
 
 Exemple ``config.yaml`` :
 
-    actions:
+    tools:
       - engine: desktop
         options:
           read_notifications: true
@@ -68,7 +68,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 from urllib.parse import urlsplit
 
-from seldon.actions.base import Action
+from seldon.core.action import Action
 from seldon.core.registry import register
 from seldon.core.types import ActionContext, ActionResult, Image
 
@@ -311,7 +311,7 @@ def _clamp(value: float, low: float, high: float) -> int:
     return int(round(min(high, max(low, value))))
 
 
-@register("actions", "desktop")
+@register("tools", "desktop")
 class Desktop(Action):
     name = "control_computer"
     description = (

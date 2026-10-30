@@ -26,9 +26,9 @@ import logging
 import time
 from typing import Any
 
-from seldon.actions.base import Action
 from seldon.brain.base import ActionExecutor, Brain
 from seldon.brain.prompts import user_message
+from seldon.core.action import Action
 from seldon.core.errors import SeldonError, describe
 from seldon.core.types import ActionResult, Utterance
 

@@ -16,12 +16,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from seldon.actions.base import Action
+from seldon.core.action import Action
 from seldon.core.registry import register
 from seldon.core.types import ActionContext, ActionResult
 
 
-@register("actions", "voix")
+@register("tools", "voix")
 class Voices(Action):
     name = "voix"
     description = (

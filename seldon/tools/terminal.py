@@ -34,7 +34,7 @@ valider.
 
 Exemple ``config.yaml`` :
 
-    actions:
+    tools:
       - engine: terminal
         options:
           mode: allowlist
@@ -53,7 +53,7 @@ import signal
 from pathlib import Path
 from typing import Any
 
-from seldon.actions.base import Action
+from seldon.core.action import Action
 from seldon.core.registry import register
 from seldon.core.types import ActionContext, ActionResult
 
@@ -385,7 +385,7 @@ def _truncate(text: str, max_chars: int, dropped: int = 0) -> str:
     return f"{text[:head]}\n[... {cut} caractères tronqués ...]\n{text[-tail:]}"
 
 
-@register("actions", "terminal")
+@register("tools", "terminal")
 class Terminal(Action):
     name = "run_shell_command"
     acknowledgement = _ACK_DEFAULT

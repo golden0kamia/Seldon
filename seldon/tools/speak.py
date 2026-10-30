@@ -4,14 +4,14 @@ import asyncio
 import logging
 from typing import Any
 
-from seldon.actions.base import Action
+from seldon.core.action import Action
 from seldon.core.registry import register
 from seldon.core.types import ActionContext, ActionResult
 
 log = logging.getLogger(__name__)
 
 
-@register("actions", "speak")
+@register("tools", "speak")
 class Speak(Action):
     name = "speak"
     ends_turn = True

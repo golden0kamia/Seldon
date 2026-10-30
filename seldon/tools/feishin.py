@@ -25,7 +25,7 @@ dans ``config.yaml`` : utilisez les variables d'environnement
 
 Exemple ``config.yaml`` :
 
-    actions:
+    tools:
       - engine: feishin
         options:
           url: ws://127.0.0.1:4333
@@ -46,7 +46,7 @@ import shutil
 import uuid
 from typing import Any
 
-from seldon.actions.base import Action
+from seldon.core.action import Action
 from seldon.core.registry import register
 from seldon.core.types import ActionContext, ActionResult
 
@@ -311,7 +311,7 @@ class Mpris:
         }
 
 
-@register("actions", "feishin")
+@register("tools", "feishin")
 class Feishin(Action):
     name = "control_music"
     description = (

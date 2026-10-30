@@ -1,4 +1,4 @@
-"""Entraînement du mot d'éveil : ``python -m seldon.tools.wakeword [MOT] [--samples K]``.
+"""Entraînement du mot d'éveil : ``python -m seldon.cli.wakeword [MOT] [--samples K]``.
 
 Seldon repère le mot d'éveil dans le texte transcrit par Whisper ; or Whisper
 écrit souvent un nom propre de travers (« Celdon », « Sel don », « Seldom »),
@@ -24,11 +24,11 @@ from pathlib import Path
 
 import numpy as np
 
+from seldon.cli.enroll import record
 from seldon.config import Config
 from seldon.core.errors import log_error
 from seldon.core.storage import write_private
 from seldon.stt.whisper import WhisperSTT, words
-from seldon.tools.enroll import record
 
 # Suite de phrase après le mot d'éveil ("" : le mot seul, comme pour appeler Seldon).
 CALLS = ["", "quelle heure est-il ?", "", "allume la lumière du salon", "", "mets un peu de musique",
@@ -146,7 +146,7 @@ async def run(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="python -m seldon.tools.wakeword",
+    parser = argparse.ArgumentParser(prog="python -m seldon.cli.wakeword",
                                      description="Apprend comment Whisper transcrit le mot d'éveil pour votre voix")
     parser.add_argument("word", nargs="?", help="mot d'éveil (défaut : le premier de stt.options.wake_words)")
     parser.add_argument("--samples", type=int, default=8, help="nombre de prises du mot d'éveil")

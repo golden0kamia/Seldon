@@ -1,14 +1,14 @@
 import json
 from typing import AsyncIterator
 
-from seldon.actions.conversations import Conversations
-from seldon.actions.speak import Speak
 from seldon.brain.base import Brain
 from seldon.core.memory import ConversationMemory, transcript_messages
 from seldon.core.pipeline import Assistant
 from seldon.core.types import Utterance
 from seldon.speakers.base import NoSpeakerId
 from seldon.stt.base import STTEngine
+from seldon.tools.conversations import Conversations
+from seldon.tools.speak import Speak
 from seldon.tts.base import TTSEngine
 
 

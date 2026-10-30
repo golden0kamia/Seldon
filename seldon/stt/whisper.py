@@ -8,7 +8,7 @@ asyncio. ``listen()`` transcrit ensuite chaque segment dans un thread.
 Avec des mots d'éveil, chaque phrase est marquée ``addressed`` (mot d'éveil
 prononcé ou non) ; c'est le pipeline qui décide d'y répondre. Les façons dont
 Whisper transcrit le mot d'éveil pour une voix donnée (« Celdon », « Sel don »…)
-s'apprennent avec ``python -m seldon.tools.wakeword`` et sont lues dans
+s'apprennent avec ``python -m seldon.cli.wakeword`` et sont lues dans
 ``wake_variants`` (JSON : mot d'éveil -> variantes).
 
 Coupure de parole (``barge_in``) : pendant que Seldon parle, l'écoute est en
@@ -37,8 +37,8 @@ from typing import Any, AsyncIterator, Callable
 
 import numpy as np
 
-from seldon.core.errors import log_error
 from seldon.core import tags
+from seldon.core.errors import log_error
 from seldon.core.registry import register
 from seldon.core.types import Utterance
 from seldon.stt.base import STTEngine
@@ -230,7 +230,7 @@ class WhisperSTT(STTEngine):
         pad_ms: int = 200,                 # marge audio avant/après la parole
         no_speech_threshold: float = 0.6,  # rejette les segments jugés « sans parole »
         wake_words: list[str] | None = None,   # ex. ["Seldon"] : marque les phrases qui commencent ainsi
-        wake_variants: str | None = "data/wake_words.json",   # transcriptions apprises : python -m seldon.tools.wakeword
+        wake_variants: str | None = "data/wake_words.json",   # transcriptions apprises : python -m seldon.cli.wakeword
         ignore: list[str] | None = None,   # phrases à jeter (hallucinations)
         barge_in: bool = True,             # écoute pendant que Seldon parle, pour pouvoir l'interrompre
         barge_in_db: float = -35.0,        # niveau minimal (dBFS) d'une interruption (au-dessus de l'écho)

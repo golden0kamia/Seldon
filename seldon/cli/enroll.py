@@ -1,4 +1,4 @@
-"""Enrôlement d'une voix : ``python -m seldon.tools.enroll NOM [--seconds N] [--samples K]``.
+"""Enrôlement d'une voix : ``python -m seldon.cli.enroll NOM [--seconds N] [--samples K]``.
 
 Enregistre K échantillons de N secondes au micro puis appelle ``enroll()`` du
 moteur d'identification configuré (section ``speakers`` de config.yaml si elle
@@ -75,7 +75,7 @@ async def run(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="python -m seldon.tools.enroll", description="Enregistre la voix d'une personne")
+    parser = argparse.ArgumentParser(prog="python -m seldon.cli.enroll", description="Enregistre la voix d'une personne")
     parser.add_argument("name", help="nom du locuteur (tel que Seldon l'appellera)")
     parser.add_argument("--seconds", type=float, default=5.0, help="durée de chaque échantillon")
     parser.add_argument("--samples", type=int, default=3, help="nombre d'échantillons")

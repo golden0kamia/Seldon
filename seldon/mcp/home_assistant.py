@@ -24,7 +24,7 @@ Seules les entités exposées à Assist dans Home Assistant sont accessibles.
 
 Exemple ``config.yaml`` :
 
-    actions:
+    mcp:
       - engine: home_assistant
         options:
           url: http://192.168.1.105:8123/api/mcp
@@ -43,9 +43,9 @@ import re
 import time
 from typing import Any
 
-from seldon.actions.mcp import MCPAction, MCPError, _sse_messages  # noqa: F401 (réexportés)
 from seldon.core.errors import describe
 from seldon.core.registry import register
+from seldon.mcp.base import MCPAction, MCPError, _sse_messages  # noqa: F401 (réexportés)
 
 log = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ def _domains_by_name(context: str) -> dict[str, str]:
     return out
 
 
-@register("actions", "home_assistant")
+@register("mcp", "home_assistant")
 class HomeAssistant(MCPAction):
     name = "home_assistant"
     label = "Home Assistant"

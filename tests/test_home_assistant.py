@@ -7,8 +7,8 @@ import json
 import httpx
 import pytest
 
-from seldon.actions.home_assistant import HomeAssistant, _domains_by_name, _sse_messages
 from seldon.core.types import ActionContext
+from seldon.mcp.home_assistant import HomeAssistant, _domains_by_name, _sse_messages
 
 URL = "http://ha.test/api/mcp"
 

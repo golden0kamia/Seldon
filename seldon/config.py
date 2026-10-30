@@ -1,8 +1,10 @@
 """Chargement de la configuration YAML.
 
 Chaque étage est décrit par ``{engine: <nom>, options: {...}}`` ; les options
-sont passées telles quelles au constructeur du plugin. Les actions sont une
-liste du même format (``engine`` = nom de l'action dans le registre).
+sont passées telles quelles au constructeur du plugin. Les actions du cerveau
+se répartissent en trois listes : ``tools`` et ``mcp`` (même format, ``engine`` =
+nom dans le registre) et ``skills`` (noms ou chemins de dossiers de skills).
+L'ancienne liste unique ``actions`` reste lue et répartie entre tools et mcp.
 """
 
 from __future__ import annotations
@@ -18,13 +20,14 @@ from typing import Any
 
 import yaml
 
+from seldon.core import registry
 from seldon.core.errors import SeldonError
 
 log = logging.getLogger(__name__)
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 CONFIRM_MODES = ("console", "always", "never")
-TOP_LEVEL = ("stt", "speakers", "brain", "tts", "actions", "memory", "commands", "confirm", "follow_up_s",
+TOP_LEVEL = ("stt", "speakers", "brain", "tts", "tools", "skills", "mcp", "actions", "memory", "commands", "confirm", "follow_up_s",
              "acknowledge", "log_level")
 
 
@@ -100,7 +103,9 @@ class Config:
     speakers: StageConfig
     brain: StageConfig
     tts: StageConfig
-    actions: list[StageConfig]
+    tools: list[StageConfig] = field(default_factory=list)   # actions en Python (seldon/tools)
+    mcp: list[StageConfig] = field(default_factory=list)     # serveurs MCP (seldon/mcp)
+    skills: list[str] = field(default_factory=list)          # dossiers skills/<nom>/SKILL.md
     brain_backup: StageConfig | None = None   # cerveau de secours (brain.backup)
     memory: dict[str, Any] = field(default_factory=dict)   # options de ConversationMemory + enabled
     commands: bool = True       # commandes locales : exit, reset, aide…
@@ -134,9 +139,24 @@ class Config:
         if not isinstance(raw, dict):
             raise SeldonError(f"{source} : la configuration doit être une liste de clés: valeurs")
 
-        actions = raw.get("actions", ["speak"]) or []
-        if not isinstance(actions, list):
-            raise SeldonError(f"{source} : « actions » doit être une liste (lignes commençant par « - »)")
+        lists: dict[str, list[Any]] = {}
+        for key in ("tools", "mcp", "skills", "actions"):
+            value = raw.get(key) or []
+            if not isinstance(value, list):
+                raise SeldonError(f"{source} : « {key} » doit être une liste (lignes commençant par « - »)")
+            lists[key] = value
+        tools = [StageConfig.parse(a, f"tools[{i + 1}]") for i, a in enumerate(lists["tools"])]
+        mcp = [StageConfig.parse(a, f"mcp[{i + 1}]") for i, a in enumerate(lists["mcp"])]
+        for i, a in enumerate(lists["actions"]):   # ancien format : une seule liste
+            stage = StageConfig.parse(a, f"actions[{i + 1}]")
+            (mcp if registry.category_of(stage.engine) == "mcp" else tools).append(stage)
+        if lists["actions"]:
+            log.info("%s : « actions » est lu, mais remplacé par « tools » et « mcp »", source)
+        if "tools" not in raw and "actions" not in raw:
+            tools = [StageConfig("speak")]
+        if not all(isinstance(s, str) and s.strip() for s in lists["skills"]):
+            raise SeldonError(f"{source} : « skills » doit lister des noms de dossiers de skills",
+                              "ex. « - bilan-du-matin » pour skills/bilan-du-matin/SKILL.md")
         memory = raw.get("memory") or {}
         if not isinstance(memory, dict):
             raise SeldonError(f"{source} : « memory » doit contenir des clés: valeurs (enabled, dir…)")
@@ -168,7 +188,9 @@ class Config:
             brain=StageConfig.parse(brain, "brain"),
             brain_backup=backup,
             tts=StageConfig.parse(raw.get("tts", "console"), "tts"),
-            actions=[StageConfig.parse(a, f"actions[{i + 1}]") for i, a in enumerate(actions)],
+            tools=tools,
+            mcp=mcp,
+            skills=[s.strip() for s in lists["skills"]],
             memory=dict(memory),
             commands=bool(raw.get("commands", True)),
             confirm=confirm,

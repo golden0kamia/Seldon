@@ -6,14 +6,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from seldon.actions.base import Action
+from seldon.core.action import Action
 from seldon.core.registry import register
 from seldon.core.types import ActionContext, ActionResult
 
 MAX_TITLE = 200   # caractères gardés d'un titre proposé par le cerveau
 
 
-@register("actions", "conversations")
+@register("tools", "conversations")
 class Conversations(Action):
     name = "conversations"
     description = (

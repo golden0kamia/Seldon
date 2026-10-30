@@ -18,10 +18,10 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def test_discover_reads_plugins_without_importing():
     plugins = discover()
-    assert {"stt", "speakers", "brain", "tts", "actions"} <= set(plugins)
+    assert {"stt", "speakers", "brain", "tts", "tools", "mcp"} <= set(plugins)
     thinking = plugins["brain"]["llamacpp"].params["thinking"]
     assert thinking.default is False and "raisonnement" in thinking.comment
-    assert "claude_code" in plugins["actions"]   # trouvé même hors de _BUILTINS
+    assert "claude_code" in plugins["tools"] and "nextcloud" in plugins["mcp"]
 
 
 def test_choices_from_comment():
@@ -36,8 +36,9 @@ def test_config_roundtrip_keeps_comments():
     doc = configdoc.loads(text)
     for key in configdoc.STAGES:
         configdoc.stage(doc, key)
-    for i in range(len(doc["actions"])):
-        configdoc.action_entry(doc["actions"], i)
+    for key in ("tools", "mcp"):
+        for i in range(len(doc[key])):
+            configdoc.action_entry(doc[key], i)
     assert configdoc.to_text(doc) == text
     doc["brain"]["options"]["max_steps"] = 12
     out = configdoc.to_text(doc)
@@ -80,7 +81,7 @@ def test_settings_edit_and_save(window, tmp_path):
     from PySide6.QtWidgets import QCheckBox
 
     s = window.settings
-    assert s.nav.count() == 7 and not s.dirty
+    assert s.nav.count() == 9 and not s.dirty   # …, Tools, MCP, Skills
     brain_page = s.pages.widget(4)   # Général, Mémoire, STT, Locuteurs, Cerveau…
     boxes = brain_page.findChildren(QCheckBox)
     backup = next(c for c in boxes if c.text() == "Cerveau de secours")
@@ -723,3 +724,29 @@ def test_brain_list_models_with_account(monkeypatch, tmp_path):
     with pytest.raises(ValueError, match="clé API Anthropic absente"):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         brainform.list_models("claude", {"auth": "api"}, {}, tmp_path / ".env")
+
+
+def test_old_actions_list_is_split_into_tools_and_mcp():
+    from seldon.config import Config
+    from seldon.core import registry
+
+    doc = configdoc.loads("brain: claude\nactions:\n  - speak   # parle\n  - engine: nextcloud\n"
+                          "    options: {url: http://x/mcp}\nlog_level: INFO\n")
+    assert configdoc.split_actions(doc, registry.category_of) and not configdoc.split_actions(doc, registry.category_of)
+    assert list(doc) == ["brain", "tools", "mcp", "log_level"]
+    cfg = Config.parse(configdoc.to_text(doc))
+    assert [t.engine for t in cfg.tools] == ["speak"] and [m.engine for m in cfg.mcp] == ["nextcloud"]
+
+
+def test_skills_page_creates_enables_and_opens_a_skill(window, tmp_path):
+    from seldon.config import Config
+    from seldon.gui.settings import SkillsPage
+    from seldon.gui.window import EDITOR_PAGE
+
+    s = window.settings
+    page = s.pages.widget(8).findChild(SkillsPage)
+    file = page.create("courses")
+    assert file == tmp_path / "skills" / "courses" / "SKILL.md" and file.is_file()
+    assert window.pages.currentIndex() == EDITOR_PAGE and window.editors.current().path == file.resolve()
+    assert s.dirty and s.save()
+    assert Config.load(tmp_path / "config.yaml").skills[-1] == "courses"

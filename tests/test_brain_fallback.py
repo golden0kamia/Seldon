@@ -3,7 +3,6 @@ import json
 import httpx
 import pytest
 
-from seldon.actions.speak import Speak
 from seldon.brain.base import Brain
 from seldon.brain.fallback import FallbackBrain
 from seldon.brain.openai import OpenAIBrain
@@ -13,6 +12,7 @@ from seldon.core.pipeline import Assistant
 from seldon.core.types import Utterance
 from seldon.speakers.base import NoSpeakerId
 from seldon.stt.text import TextInput
+from seldon.tools.speak import Speak
 from seldon.tts.base import TTSEngine
 
 

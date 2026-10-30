@@ -23,12 +23,13 @@ SETTINGS_PAGE, EDITOR_PAGE, LOGS_PAGE, STRUCTURE_PAGE = 0, 1, 2, 3
 
 
 def project_roots(project: Path, doc) -> list[tuple[str, Path]]:
-    """Dossiers proposés d'office : le projet Seldon, ses données, et les ``cwd`` des actions."""
+    """Dossiers proposés d'office : le projet Seldon, ses données, ses skills et les ``cwd`` des tools."""
     roots = [("Seldon", project)]
-    data = project / "data"
-    if data.is_dir():
-        roots.append(("Données", data))
-    for item in (doc or {}).get("actions", []) or []:
+    for label, name in (("Données", "data"), ("Skills", "skills")):
+        if (project / name).is_dir():
+            roots.append((label, project / name))
+    doc = doc or {}
+    for item in [*(doc.get("tools") or []), *(doc.get("actions") or [])]:
         if not hasattr(item, "get"):
             continue
         cwd = (item.get("options") or {}).get("cwd")
