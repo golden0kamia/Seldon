@@ -531,6 +531,8 @@ class SettingsPanel(QWidget):
                 editor = StageEditor(node, self.plugins.get(cat, {}), self._changed)
             self._page(title, editor, extra=extra)
         migrated = configdoc.split_actions(self.doc, registry.category_of)   # ancien format « actions: »
+        # conversations et voix : outils de la mémoire et des locuteurs, plus des tools à activer
+        migrated = configdoc.drop_actions(self.doc.get("tools"), registry.PLUGIN_TOOLS) or migrated
         for key, title, intro, noun, default in (
                 ("tools", "Tools", "Actions en Python que le cerveau peut appeler. L'ordre n'a pas d'importance.",
                  "le tool", ["speak"]),

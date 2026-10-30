@@ -1,7 +1,9 @@
 """Orchestration : STT -> identification du locuteur -> cerveau -> actions.
 
-Les actions proposées au cerveau sont les tools, les serveurs MCP et, s'il y a
-des skills, l'outil ``skill`` qui en donne les consignes (voir ``seldon.skills``).
+Les actions proposées au cerveau sont les tools, les outils des plugins de
+Seldon (``conversations`` de la mémoire, ``voix`` de l'identification des
+locuteurs), les serveurs MCP et, s'il y a des skills, l'outil ``skill`` qui en
+donne les consignes (voir ``seldon.skills``).
 
 Attention : si l'STT utilise des mots d'éveil, Seldon répond aux phrases qui en
 commencent par un, puis reste attentif ``follow_up_s`` secondes après chaque
@@ -151,12 +153,15 @@ class Assistant:
                 memory = ConversationMemory(brain, brain_kind, **memory_opts)
         except (TypeError, ValueError) as e:
             raise SeldonError(f"Section « memory » invalide : {e}") from e
+        speakers = build("speakers", cfg.speakers)
         return cls(
             stt=build("stt", cfg.stt),
-            speakers=build("speakers", cfg.speakers),
+            speakers=speakers,
             brain=brain,
             tts=build("tts", cfg.tts),
-            actions=[*(build("tools", t) for t in cfg.tools), *(build("mcp", m) for m in cfg.mcp),
+            # La mémoire et l'identification des voix apportent leurs propres outils (conversations, voix).
+            actions=[*(build("tools", t) for t in cfg.tools), *(memory.actions() if memory else []),
+                     *speakers.actions(), *(build("mcp", m) for m in cfg.mcp),
                      *([Skills(cfg.skills)] if cfg.skills else [])],
             confirm=CONFIRMERS[cfg.confirm],
             enable_commands=cfg.commands,

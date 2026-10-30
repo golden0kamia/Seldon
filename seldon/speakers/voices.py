@@ -1,4 +1,5 @@
-"""Action « voix » : Seldon apprend à reconnaître les personnes qui lui parlent.
+"""Outil « voix », fourni par l'identification des locuteurs (``SpeakerIdentifier.actions``) :
+Seldon apprend à reconnaître les personnes qui lui parlent.
 
 Quand une voix n'est pas reconnue, le cerveau demande son nom à la personne puis
 l'enregistre avec les phrases qu'elle vient de prononcer (aucun enrôlement
@@ -17,11 +18,9 @@ from __future__ import annotations
 from typing import Any
 
 from seldon.core.action import Action
-from seldon.core.registry import register
 from seldon.core.types import ActionContext, ActionResult
 
 
-@register("tools", "voix")
 class Voices(Action):
     name = "voix"
     description = (

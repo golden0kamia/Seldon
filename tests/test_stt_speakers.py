@@ -256,7 +256,7 @@ async def test_forget_voice(ident, tmp_path):
 
 
 async def test_voices_action(ident):
-    from seldon.tools.voices import Voices
+    from seldon.speakers.voices import Voices
     from seldon.brain.prompts import speaker_label
     from seldon.core.types import ActionContext
 

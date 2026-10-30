@@ -150,6 +150,10 @@ class Config:
         for i, a in enumerate(lists["actions"]):   # ancien format : une seule liste
             stage = StageConfig.parse(a, f"actions[{i + 1}]")
             (mcp if registry.category_of(stage.engine) == "mcp" else tools).append(stage)
+        if provided := [s.engine for s in tools if s.engine in registry.PLUGIN_TOOLS]:   # anciennes configs
+            tools = [s for s in tools if s.engine not in registry.PLUGIN_TOOLS]
+            log.info("%s : %s ignoré(s) dans « tools » : fourni(s) par %s", source, ", ".join(provided),
+                     ", ".join(sorted({registry.PLUGIN_TOOLS[e] for e in provided})))
         if lists["actions"]:
             log.info("%s : « actions » est lu, mais remplacé par « tools » et « mcp »", source)
         if "tools" not in raw and "actions" not in raw:

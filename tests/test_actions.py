@@ -327,7 +327,7 @@ def test_acknowledgement_follows_the_request():
 
 def test_contextual_acknowledgements_of_other_actions():
     from seldon.tools.claude_code import ClaudeCode
-    from seldon.tools.conversations import Conversations
+    from seldon.core.conversations import Conversations
     from seldon.tools.feishin import Feishin
 
     music = Feishin()

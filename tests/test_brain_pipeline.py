@@ -175,7 +175,12 @@ def test_registry_and_config(tmp_path):
     cfg_file.write_text("stt: text\nbrain: {engine: claude, options: {effort: medium}}\nactions: [speak]\n")
     cfg = Config.load(cfg_file)
     a = Assistant.from_config(cfg)
-    assert a.brain.effort == "medium" and list(a.actions) == ["speak"]
+    assert a.brain.effort == "medium" and list(a.actions) == ["speak", "conversations"]   # outil de la mémoire
+    # conversations / voix d'une ancienne config : ignorés, fournis par la mémoire et les locuteurs
+    cfg_file.write_text("stt: text\nmemory: {enabled: false}\ntools: [speak, conversations, voix]\n")
+    cfg = Config.load(cfg_file)
+    assert [t.engine for t in cfg.tools] == ["speak"]
+    assert list(Assistant.from_config(cfg).actions) == ["speak"]   # ni mémoire ni identification des voix
     with pytest.raises(SeldonError, match="moteurs disponibles"):
         registry.resolve("tts", "inexistant")
 

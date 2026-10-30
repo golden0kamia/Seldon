@@ -51,8 +51,6 @@ _BUILTINS: dict[str, dict[str, str]] = {
         "speak": "seldon.tools.speak",
         "terminal": "seldon.tools.terminal",
         "camera": "seldon.tools.camera",
-        "conversations": "seldon.tools.conversations",
-        "voix": "seldon.tools.voices",
         "feishin": "seldon.tools.feishin",
         "desktop": "seldon.tools.desktop",
         "controle": "seldon.tools.control",
@@ -167,6 +165,10 @@ def create(category: str, name: str, **options: Any) -> Any:
         raise
     except (TypeError, ValueError) as e:
         raise SeldonError(f"Option invalide pour {category} « {name} » : {e}") from e
+
+
+# Outils fournis par un plugin de Seldon (et non des tools à activer) -> section qui les active.
+PLUGIN_TOOLS = {"conversations": "memory", "voix": "speakers"}
 
 
 def category_of(name: str) -> str:

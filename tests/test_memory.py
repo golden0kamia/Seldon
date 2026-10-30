@@ -7,7 +7,7 @@ from seldon.core.pipeline import Assistant
 from seldon.core.types import Utterance
 from seldon.speakers.base import NoSpeakerId
 from seldon.stt.base import STTEngine
-from seldon.tools.conversations import Conversations
+from seldon.core.conversations import Conversations
 from seldon.tools.speak import Speak
 from seldon.tts.base import TTSEngine
 

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from seldon.core.action import Action
 from seldon.core.registry import register
 from seldon.core.types import Utterance
+from seldon.speakers.voices import Voices
 
 
 class SpeakerIdentifier(ABC):
@@ -47,6 +49,10 @@ class SpeakerIdentifier(ABC):
         """Supprime la voix ``name`` ; faux si elle n'existe pas."""
         raise NotImplementedError
 
+    def actions(self) -> list[Action]:
+        """Outils proposés au cerveau : la base des voix (apprendre une voix inconnue, oublier…)."""
+        return [Voices()]
+
 
 @register("speakers", "none")
 class NoSpeakerId(SpeakerIdentifier):
@@ -54,3 +60,6 @@ class NoSpeakerId(SpeakerIdentifier):
 
     async def identify(self, utterance: Utterance) -> Utterance:
         return utterance
+
+    def actions(self) -> list[Action]:
+        return []   # pas d'identification : aucune voix à apprendre
