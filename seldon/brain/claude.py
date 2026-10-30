@@ -7,6 +7,12 @@ L'historique est conservé entre les tours (append-only : les blocs renvoyés
 par l'API, y compris les blocs de réflexion, sont réinjectés tels quels) ;
 au-delà d'une taille maximale, les plus anciens échanges sont allégés puis
 oubliés (``seldon.brain.history``).
+
+Deux façons de se connecter (option ``auth``) :
+- ``api`` : clé ``ANTHROPIC_API_KEY`` (fichier .env), facturation au token ;
+- ``abonnement`` : compte claude.ai (Pro / Max) via Claude Code, connecté une
+  fois avec ``claude auth login`` ; décompté des limites de l'abonnement
+  (voir ``seldon.brain.claude_account``).
 """
 
 from __future__ import annotations
@@ -15,8 +21,6 @@ import base64
 import logging
 from typing import Any
 
-import anthropic
-
 from seldon.actions.base import Action
 from seldon.brain import history
 from seldon.brain.base import ActionExecutor, Brain, ends_turn
@@ -24,6 +28,11 @@ from seldon.brain.prompts import STEP_LIMIT_REPLY, SYSTEM_PROMPT, user_message
 from seldon.core.errors import SeldonError
 from seldon.core.registry import register
 from seldon.core.types import ActionResult, Utterance
+
+try:   # pas nécessaire avec auth: abonnement
+    import anthropic
+except ImportError:
+    anthropic = None
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +57,7 @@ def _result_content(result: ActionResult) -> list[dict[str, Any]]:
 class ClaudeBrain(Brain):
     def __init__(
         self,
+        auth: str = "api",                 # api | abonnement
         model: str = "claude-opus-5-5",
         effort: str = "low",               # low | medium | high | xhigh | max
         max_tokens: int = 16000,
@@ -58,7 +68,11 @@ class ClaudeBrain(Brain):
         fallbacks: bool = True,            # relance côté serveur en cas de refus
         extra_instructions: str = "",
         timeout_s: float = 120,
+        claude_bin: str | None = None,     # abonnement : chemin du CLI claude (None = celui du SDK)
     ) -> None:
+        if auth not in ("api", "abonnement"):
+            raise ValueError(f"auth inconnu : {auth!r} (api ou abonnement)")
+        self.auth = auth
         self.model = model
         self.effort = effort
         self.max_tokens = max_tokens
@@ -69,19 +83,40 @@ class ClaudeBrain(Brain):
         self.fallbacks = fallbacks
         self.system = SYSTEM_PROMPT + (f"\n{extra_instructions.strip()}\n" if extra_instructions else "")
         self.timeout_s = timeout_s
-        self.client: anthropic.AsyncAnthropic | None = None
+        self.claude_bin = claude_bin
+        self.client: Any = None
         self.messages: list[dict[str, Any]] = []
         self._pending: list[dict[str, Any]] = []   # tool_result non encore envoyés
+        self.account = None
+        if auth == "abonnement":
+            from seldon.brain.claude_account import AccountSession
+
+            self.account = AccountSession(self)
 
     async def start(self) -> None:
+        if self.account is not None:
+            self.account.check()
+            return
+        if anthropic is None:
+            raise SeldonError("Module anthropic absent", "pip install 'seldon[llm-claude]'")
         try:
             self.client = anthropic.AsyncAnthropic(timeout=self.timeout_s)
         except anthropic.AnthropicError as e:
             raise SeldonError("Clé API Anthropic absente", "définissez la variable ANTHROPIC_API_KEY avant de lancer Seldon") from e
 
+    async def stop(self) -> None:
+        if self.account is not None:
+            await self.account.close()
+
+    async def warmup(self, actions: list[Action]) -> None:
+        if self.account is not None:   # démarre Claude Code avant la première phrase
+            await self.account.connect(actions)
+
     def reset(self) -> None:
         self.messages.clear()
         self._pending.clear()
+        if self.account is not None:
+            self.account.forget()
 
     def get_state(self) -> dict[str, Any]:
         return {**super().get_state(), "pending": list(self._pending)}
@@ -90,10 +125,15 @@ class ClaudeBrain(Brain):
         pending, self._pending = self._pending, []
         self.messages.append({"role": "user", "content": [*pending, {"type": "text", "text": user}]})
         self.messages.append({"role": "assistant", "content": [{"type": "text", "text": assistant}]})
+        if self.account is not None:
+            self.account.added(2)
 
     def set_state(self, state: dict[str, Any]) -> None:
         super().set_state(state)
         self._pending = list(state.get("pending", []))
+        if self.account is not None:
+            self._pending.clear()   # tool_result d'une session API : sans objet ici
+            self.account.forget()
 
     async def _call(self, tools: list[dict[str, Any]]):
         kwargs: dict[str, Any] = dict(
@@ -113,6 +153,8 @@ class ClaudeBrain(Brain):
         return await self.client.messages.create(**kwargs)
 
     async def summarize(self, instructions: str, text: str) -> str | None:
+        if self.account is not None:
+            return await self.account.summarize(instructions, text)
         if self.client is None:
             return None
         response = await self.client.messages.create(
@@ -125,6 +167,8 @@ class ClaudeBrain(Brain):
         return "".join(b.text for b in response.content if b.type == "text").strip() or None
 
     async def handle(self, utterance: Utterance, actions: list[Action], execute: ActionExecutor) -> str | None:
+        if self.account is not None:
+            return await self.account.handle(utterance, actions, execute)
         assert self.client is not None, "start() n'a pas été appelé"
         history.compact(self.messages, history.ANTHROPIC, self.max_history_chars, self.max_history_messages)
 

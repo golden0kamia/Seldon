@@ -9,13 +9,18 @@ Changer de moteur met de côté les options du précédent (retrouvées si on y
 revient) : on peut comparer plusieurs moteurs sans tout ressaisir.
 
 Les clés API (Anthropic, OpenAI) ne vont jamais dans config.yaml : elles sont
-écrites dans le fichier ``.env`` voisin (droits 600).
+écrites dans le fichier ``.env`` voisin (droits 600). Claude avec
+``auth: abonnement`` n'a pas de clé : le compte est celui de Claude Code
+(``claude auth login``), vérifié par le bouton « Lister ».
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import shutil
+import subprocess
 import threading
 from pathlib import Path
 from typing import Any, Callable
@@ -40,7 +45,10 @@ ENGINE_LABELS = {
     "openai": "OpenAI — GPT, en ligne",
 }
 ENV_KEYS = {"claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}   # clé lue dans .env
-CONNECTION = {"llamacpp": ("base_url", "api_key"), "ollama": ("host",), "openai": ("base_url",)}
+CONNECTION = {"llamacpp": ("base_url", "api_key"), "ollama": ("host",), "openai": ("base_url",),
+              "claude": ("auth", "claude_bin")}
+# auth: abonnement — pas de liste de modèles sans clé API : ceux de la famille actuelle
+ACCOUNT_MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"]
 MAIN = ("effort", "reasoning_effort", "thinking", "think", "vision", "temperature", "stream", "extra_instructions")
 MODEL_PLACEHOLDER = {"llamacpp": "modèle chargé sur le serveur"}
 WARNING = "⚠"
@@ -90,6 +98,26 @@ def api_key(engine: str, options: dict[str, Any], env_path: Path) -> str | None:
     return (os.environ.get(name) or read_env(env_path).get(name)) if name else None
 
 
+def uses_account(engine: str, options: dict[str, Any]) -> bool:
+    return engine == "claude" and options.get("auth") == "abonnement"
+
+
+def account_status(claude_bin: str | None) -> str:
+    """Compte claude.ai auquel Claude Code est connecté (``claude auth status``) ; ValueError sinon."""
+    path = shutil.which(claude_bin or "claude")
+    if path is None:
+        raise ValueError("Claude Code (commande claude) introuvable")
+    out = subprocess.run([path, "auth", "status"], capture_output=True, text=True, timeout=20,
+                         env={**os.environ, "ANTHROPIC_API_KEY": "", "ANTHROPIC_AUTH_TOKEN": ""})
+    try:
+        status = json.loads(out.stdout)
+    except ValueError:
+        status = {}
+    if not status.get("loggedIn") or status.get("authMethod") != "claude.ai":
+        raise ValueError("compte non connecté : lancez « claude auth login » dans un terminal")
+    return str(status.get("email") or "compte claude.ai")
+
+
 # --- liste des modèles ----------------------------------------------------------
 
 def list_models(engine: str, options: dict[str, Any], defaults: dict[str, Any], env_path: Path) -> list[str]:
@@ -98,6 +126,9 @@ def list_models(engine: str, options: dict[str, Any], defaults: dict[str, Any], 
 
     opt = {**defaults, **{k: v for k, v in options.items() if v is not None}}
     key = api_key(engine, options, env_path)
+    if uses_account(engine, opt):
+        account_status(opt.get("claude_bin"))
+        return list(ACCOUNT_MODELS)
     if engine == "claude":
         if not key:
             raise ValueError("clé API Anthropic absente")
@@ -224,7 +255,9 @@ class BrainEditor(QWidget):
     def _set(self, key: str, value: Any) -> None:
         self.options[key] = value
         self.on_change()
-        if key in self.resets:   # pas de reconstruction : le champ garde le focus pendant la saisie
+        if key == "auth":   # clé API ou compte : la ligne de connexion change
+            self.rebuild()
+        elif key in self.resets:   # pas de reconstruction : le champ garde le focus pendant la saisie
             self.resets[key].setEnabled(True)
 
     def _reset(self, key: str) -> None:
@@ -262,7 +295,12 @@ class BrainEditor(QWidget):
 
         self.body.addWidget(theme.caption("connexion"))
         conn = _Section()
-        if self.engine in ENV_KEYS:
+        if uses_account(self.engine, self.options):
+            label = QLabel("compte")
+            label.setFont(theme.mono_font(10))
+            conn.add(label, QLabel("abonnement claude.ai, via Claude Code"),
+                     "connexion : claude auth login (terminal) ; « Lister » la vérifie", None)
+        elif self.engine in ENV_KEYS:
             self._add_key_row(conn)
         if "model" in params or "model" in self.options:
             self._add_model_row(conn)
@@ -421,6 +459,9 @@ class BrainEditor(QWidget):
         self.model_box.setCurrentText(current)
         self.model_box.blockSignals(False)
         missing = current and current not in models
+        if uses_account(engine, self.options):
+            self._show_status(f"✓ Compte claude.ai connecté — modèles {', '.join(models)}")
+            return
         self._show_status(f"✓ Connexion réussie : {len(models)} modèle(s) disponible(s)"
                           + (f" — « {current} » n'en fait pas partie" if missing else ""), error=bool(missing))
 

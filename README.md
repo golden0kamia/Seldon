@@ -71,7 +71,7 @@ localhost`) ; les options ajoutées sont transmises (`./llama-serve.sh -c 16384`
 Pour une voix réactive, privilégier un modèle qui tient entièrement en VRAM
 et laisser `thinking: false`.
 
-Cerveaux en ligne : `engine: claude` (clé `ANTHROPIC_API_KEY`) ou
+Cerveaux en ligne : `engine: claude` (clé `ANTHROPIC_API_KEY`, ou abonnement : voir plus bas) ou
 `engine: openai` (clé `OPENAI_API_KEY`, modèle dans `options.model` ;
 `base_url` vise aussi un autre fournisseur compatible OpenAI). Un **cerveau de
 secours** se déclare sous `brain.backup`, au même format, ou dans l'interface
@@ -84,6 +84,21 @@ brain:
   backup:
     engine: openai
     options: {model: gpt-5.6-luna}
+```
+
+Claude avec un **abonnement claude.ai** (Pro / Max) plutôt qu'une clé API
+facturée au token : `auth: abonnement`. Les requêtes passent par Claude Code
+(paquet `claude-agent-sdk`, CLI `claude`), connecté une fois avec
+`claude auth login` ; elles comptent dans les limites de l'abonnement. Claude
+Code n'y reçoit que les actions de Seldon (aucun de ses outils, réglages ou
+serveurs MCP), et `ANTHROPIC_API_KEY` lui est masquée. Usage personnel
+uniquement : les conditions d'Anthropic ne permettent pas d'offrir la connexion
+claude.ai dans un produit distribué à d'autres.
+
+```yaml
+brain:
+  engine: claude
+  options: {auth: abonnement, model: claude-opus-5-5, effort: low}
 ```
 
 Si le principal ne démarre pas ou échoue avant d'avoir lancé une action

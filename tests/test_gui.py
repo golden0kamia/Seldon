@@ -712,3 +712,14 @@ def test_brain_form_follows_engine_and_keeps_keys_out_of_config(window, tmp_path
     env = tmp_path / ".env"
     assert read_env(env)["ANTHROPIC_API_KEY"] == "sk-ant-test" and env.stat().st_mode & 0o077 == 0
     assert s.save() and "sk-ant" not in (tmp_path / "config.yaml").read_text(encoding="utf-8")
+
+
+def test_brain_list_models_with_account(monkeypatch, tmp_path):
+    from seldon.gui import brainform
+
+    monkeypatch.setattr(brainform, "account_status", lambda _bin: "moi@example.org")
+    models = brainform.list_models("claude", {"auth": "abonnement"}, {}, tmp_path / ".env")
+    assert models == brainform.ACCOUNT_MODELS
+    with pytest.raises(ValueError, match="clé API Anthropic absente"):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        brainform.list_models("claude", {"auth": "api"}, {}, tmp_path / ".env")

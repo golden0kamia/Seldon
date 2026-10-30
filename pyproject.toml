@@ -9,7 +9,7 @@ dependencies = [
 
 [project.optional-dependencies]
 llm-local = ["httpx>=0.27", "ollama>=0.6"]
-llm-claude = ["anthropic>=1.0"]
+llm-claude = ["anthropic>=1.0", "claude-agent-sdk>=0.2"]   # SDK : auth: abonnement
 llm-openai = ["httpx>=0.27"]
 stt = ["faster-whisper>=1.1", "sounddevice>=0.4", "numpy>=1.26"]
 speakers = ["resemblyzer>=0.1.4", "sounddevice>=0.4", "numpy>=1.26"]
