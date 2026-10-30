@@ -1,19 +1,18 @@
-"""Action « conversations » : permet au cerveau de retrouver, reprendre, modifier ou supprimer
-une conversation passée. Chaque modification ou suppression demande une confirmation
-(``ctx.confirm``) : elle n'est faite que si l'utilisateur l'accepte."""
+"""Outil « conversations », fourni par la mémoire (``ConversationMemory.actions``) : permet
+au cerveau de retrouver, reprendre, modifier ou supprimer une conversation passée. Chaque
+modification ou suppression demande une confirmation (``ctx.confirm``) : elle n'est faite
+que si l'utilisateur l'accepte."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from seldon.core.action import Action
-from seldon.core.registry import register
 from seldon.core.types import ActionContext, ActionResult
 
 MAX_TITLE = 200   # caractères gardés d'un titre proposé par le cerveau
 
 
-@register("tools", "conversations")
 class Conversations(Action):
     name = "conversations"
     description = (

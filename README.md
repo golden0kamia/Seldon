@@ -20,11 +20,16 @@ lancer. La réponse à l'utilisateur est elle-même une action (`speak`).
 Les actions se rangent en trois familles, chacune sa section de `config.yaml` :
 
 - **tools** (`tools:`) : code Python qui agit directement — parler, terminal,
-  caméra, musique, bureau du PC, Claude Code, conversations, voix ;
+  caméra, musique, bureau du PC, Claude Code ;
 - **MCP** (`mcp:`) : serveurs MCP externes dont les outils sont proposés au
   cerveau — Home Assistant, Nextcloud ;
 - **skills** (`skills:`) : des consignes sans code, qui disent au cerveau comment
   mener un type de demande avec les tools et MCP (voir [Skills](#skills)).
+
+La gestion des conversations et la reconnaissance des voix ne sont pas des
+tools : ce sont des plugins de Seldon (`memory:` et `speakers:`), qui proposent
+eux-mêmes leur outil au cerveau quand ils sont activés — `conversations` pour
+la mémoire, `voix` pour l'identification des locuteurs.
 
 L'ancienne liste unique `actions:` est encore lue (et répartie entre tools et
 MCP) ; l'interface la convertit au premier enregistrement.
@@ -249,7 +254,7 @@ le cerveau ne peut désigner qu'un fichier de ce dossier. Après 10 min de silen
 une nouvelle conversation commence ; l'ancienne reste disponible. Pour reprendre
 un sujet, il suffit de le demander (« on reprend notre discussion sur les
 tomates ? ») : le cerveau cherche et recharge la conversation via l'outil
-`conversations`. Au clavier : `/conversations tomates` puis `/reprendre 1`
+`conversations`, fourni par la mémoire (désactivé avec `enabled: false`). Au clavier : `/conversations tomates` puis `/reprendre 1`
 (pour ajouter une commande : décorateur `@command` dans
 `seldon/core/commands.py`). Dans l'interface, page Paramètres › Mémoire.
 
@@ -426,8 +431,9 @@ précise (phrases lues au calme). On peut aussi lui demander qui il connaît, ou
 d'oublier une voix (avec confirmation). Ajouter une voix inconnue à une voix
 déjà enregistrée (« je suis Bastien ») demande une **confirmation** : sinon,
 n'importe qui pourrait prendre l'identité, et les droits, d'un admin. Une voix inconnue reste
-enregistrable pendant `unknown_memory_s` (10 min par défaut) ; retirer `voix`
-de `tools` désactive ce comportement.
+enregistrable pendant `unknown_memory_s` (10 min par défaut). L'action `voix`
+est fournie par l'identification des locuteurs : elle disparaît avec
+`speakers: none`.
 
 Les voix **s'affinent avec l'usage** : une phrase reconnue avec certitude
 (`adapt_threshold`, et nettement devant toute autre voix) est ajoutée à
@@ -491,7 +497,7 @@ haut-parleurs forts, monter `barge_in_db` (ex. -25) ou mettre
 | Dossier | Rôle | Contrat |
 |---|---|---|
 | `seldon/stt/` | Parole → texte | `STTEngine.listen()` produit des `Utterance` |
-| `seldon/speakers/` | Qui parle ? | `SpeakerIdentifier.identify(utterance)` |
+| `seldon/speakers/` | Qui parle ? (et outil `voix`) | `SpeakerIdentifier.identify(utterance)`, `.actions()` |
 | `seldon/brain/` | Décision | `Brain.handle(utterance, actions, execute)` |
 | `seldon/tools/` | Tools du cerveau (Python) | `Action.run(params, ctx) -> ActionResult` (`seldon/core/action.py`) |
 | `seldon/mcp/` | Client MCP et serveurs branchés (Home Assistant, Nextcloud) | `MCPAction` : un outil par serveur |

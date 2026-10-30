@@ -3,7 +3,7 @@
 #          python -m seldon --text     (clavier + console, pour tester le cerveau)
 
 log_level: INFO
-memory:                   # mémoire des conversations (reprise à tout moment)
+memory:                   # mémoire des conversations (reprise à tout moment, outil « conversations »)
   enabled: true
   dir: data/conversations
   new_after_idle_s: 600   # après 10 min de silence, nouvelle conversation (l'ancienne est gardée)
@@ -32,7 +32,7 @@ stt:
     barge_in: true        # on peut couper la parole à Seldon (« stop », « attends »…)
     barge_in_db: -35      # niveau minimal d'une interruption ; monter si l'écho des HP le déclenche
 
-speakers:
+speakers:                 # qui parle ; outil « voix » : apprend les voix inconnues
   engine: resemblyzer     # "none" pour désactiver
   options:
     voices_dir: data/voices
@@ -68,8 +68,6 @@ tts:
 
 tools:                    # actions en Python (seldon/tools)
   - speak
-  - conversations         # retrouver / reprendre une conversation passée à la voix
-  - voix                  # demande son nom à une voix inconnue et l'enregistre
   - controle              # « coupe ton micro », « arrête-toi » : Seldon agit sur son propre état
   - engine: terminal
     options:

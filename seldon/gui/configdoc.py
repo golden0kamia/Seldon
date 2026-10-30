@@ -139,6 +139,18 @@ def split_actions(doc: CommentedMap, category_of: Any) -> bool:
     return True
 
 
+def drop_actions(actions: Any, names: Any) -> bool:
+    """Retire de la liste ``actions`` les entrées dont le moteur est dans ``names`` (outils
+    désormais fournis par un plugin) ; renvoie True si la liste a changé."""
+    if not isinstance(actions, CommentedSeq):
+        return False
+    drop = [i for i, item in enumerate(actions)
+            if str(item.get("engine") if isinstance(item, CommentedMap) else item) in names]
+    for i in reversed(drop):
+        del actions[i]
+    return bool(drop)
+
+
 def compact_actions(actions: CommentedSeq) -> None:
     """Réécrit ``{engine: x}`` sans options en ``- x`` pour garder le fichier lisible."""
     for i, item in enumerate(actions):

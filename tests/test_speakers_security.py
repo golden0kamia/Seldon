@@ -10,7 +10,7 @@ import pytest
 from seldon.core.types import ActionContext, Utterance
 from seldon.speakers import resemblyzer_id
 from seldon.speakers.resemblyzer_id import ResemblyzerID, _safe_name
-from seldon.tools.voices import Voices
+from seldon.speakers.voices import Voices
 from tests.test_stt_speakers import FakeEncoder, voice
 
 

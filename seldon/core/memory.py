@@ -58,6 +58,8 @@ from typing import Any
 
 from seldon.brain.base import Brain
 from seldon.brain.prompts import neutralize
+from seldon.core.action import Action
+from seldon.core.conversations import Conversations
 from seldon.core.storage import write_private
 
 log = logging.getLogger(__name__)
@@ -292,6 +294,10 @@ class ConversationMemory:
         self.listing: list[str] = []   # identifiants du dernier affichage de /conversations
         # Lecture initiale en arrière-plan (pendant le chargement des modèles), pas à la première phrase.
         threading.Thread(target=self._warm_up, name="seldon-memory", daemon=True).start()
+
+    def actions(self) -> list[Action]:
+        """Outils que la mémoire propose au cerveau (retrouver, reprendre, modifier une conversation)."""
+        return [Conversations()]
 
     def _warm_up(self) -> None:
         try:
