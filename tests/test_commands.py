@@ -2,13 +2,13 @@ from typing import AsyncIterator
 
 import pytest
 
-from seldon.actions.speak import Speak
 from seldon.brain.base import Brain
 from seldon.core.commands import match, normalize
 from seldon.core.pipeline import Assistant
 from seldon.core.types import Utterance
 from seldon.speakers.base import NoSpeakerId
 from seldon.stt.base import STTEngine
+from seldon.tools.speak import Speak
 from seldon.tts.base import TTSEngine
 
 
@@ -81,7 +81,7 @@ async def test_reset_and_actions_skip_brain():
     a, brain, tts = assistant(["/reset", "actions"])
     await a.run()
     assert brain.seen == [] and brain.resets == 1
-    assert tts.said == ["Conversation effacée.", "Actions : speak."]
+    assert tts.said == ["Conversation effacée.", "Tools : speak."]
 
 
 async def test_commands_can_be_disabled():
@@ -113,7 +113,7 @@ class ControlBrain(EchoBrain):
 
 
 async def test_control_action_mutes_and_quits():
-    from seldon.actions.control import Control
+    from seldon.tools.control import Control
 
     brain, tts, stt = ControlBrain(), RecordingTTS(), MutableSTT(["fais couper_micro", "fais quitter", "jamais traité"])
     await Assistant(stt, NoSpeakerId(), brain, tts, [Speak(), Control()]).run()

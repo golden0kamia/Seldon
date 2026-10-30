@@ -2,7 +2,7 @@
 
 Exemple ``config.yaml`` :
 
-    actions:
+    tools:
       - engine: camera
         options:
           device: 0                 # index ou chemin (/dev/video2)
@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from seldon.actions.base import Action
+from seldon.core.action import Action
 from seldon.core.registry import register
 from seldon.core.storage import private_dir
 from seldon.core.types import ActionContext, ActionResult, Image
@@ -49,7 +49,7 @@ def _spec(defaults: dict[str, Any], spec: Any) -> dict[str, Any]:
     return out
 
 
-@register("actions", "camera")
+@register("tools", "camera")
 class Camera(Action):
     name = "capture_image"
     acknowledgement = ("Je regarde.", "Voyons ça.", "Un instant, je regarde.", "Je jette un œil.")

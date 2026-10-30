@@ -2,13 +2,13 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from seldon.actions.base import Action
-from seldon.actions.speak import Speak
 from seldon.brain.ollama import OllamaBrain
+from seldon.core.action import Action
 from seldon.core.pipeline import Assistant
 from seldon.core.types import ActionResult, Image, Utterance
 from seldon.speakers.base import NoSpeakerId
 from seldon.stt.text import TextInput
+from seldon.tools.speak import Speak
 from seldon.tts.base import TTSEngine
 
 

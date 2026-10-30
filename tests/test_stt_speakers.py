@@ -76,7 +76,7 @@ def test_wake_words():
 
 
 def test_learned_wake_variants(tmp_path):
-    from seldon.tools.wakeword import candidate, useful
+    from seldon.cli.wakeword import candidate, useful
 
     path = tmp_path / "wake_words.json"
     path.write_text('{"Seldon": ["celdon", "sel don"], "Jarvis": ["jarvice"]}', encoding="utf-8")
@@ -256,7 +256,7 @@ async def test_forget_voice(ident, tmp_path):
 
 
 async def test_voices_action(ident):
-    from seldon.actions.voices import Voices
+    from seldon.tools.voices import Voices
     from seldon.brain.prompts import speaker_label
     from seldon.core.types import ActionContext
 

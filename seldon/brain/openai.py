@@ -14,8 +14,8 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from seldon.actions.base import Action
 from seldon.brain.llamacpp import LlamaCppBrain
+from seldon.core.action import Action
 from seldon.core.errors import SeldonError
 from seldon.core.registry import register
 

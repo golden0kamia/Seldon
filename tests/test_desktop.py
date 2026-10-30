@@ -8,9 +8,9 @@ import time
 
 import pytest
 
-from seldon.actions import desktop as desktop_mod
-from seldon.actions.desktop import Desktop, Notification, _messages, clean_text, parse_message
 from seldon.core.types import ActionContext
+from seldon.tools import desktop as desktop_mod
+from seldon.tools.desktop import Desktop, Notification, _messages, clean_text, parse_message
 
 # Capture réelle de « dbus-monitor --session --binary » pendant
 # notify-send -a SeldonTest "Titre bin" 'Corps <b>gras</b> & "q"' (NameAcquired, NameLost, Notify).

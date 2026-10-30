@@ -11,10 +11,10 @@ import time
 
 import pytest
 
-from seldon.actions.camera import Camera
-from seldon.actions.claude_code import ClaudeCode
-from seldon.actions.speak import Speak
 from seldon.core.types import ActionContext, Utterance
+from seldon.tools.camera import Camera
+from seldon.tools.claude_code import ClaudeCode
+from seldon.tools.speak import Speak
 from seldon.tts.base import TTSEngine
 from tests.test_actions import FakeCapture, fake_cv2  # noqa: F401  (fixture)
 from tests.test_presence import InterruptingSTT, SlowTTS
@@ -77,7 +77,7 @@ async def test_camera_photos_never_overwrite_and_are_private(fake_cv2, tmp_path,
     folder = tmp_path / "photos"
     cam = Camera(save_dir=str(folder))
     frozen = time.localtime()
-    monkeypatch.setattr("seldon.actions.camera.time.localtime", lambda *a: frozen)
+    monkeypatch.setattr("seldon.tools.camera.time.localtime", lambda *a: frozen)
     for _ in range(3):   # même seconde
         assert not (await cam.run({}, ActionContext())).is_error
     files = sorted(folder.iterdir())

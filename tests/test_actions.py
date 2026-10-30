@@ -7,10 +7,10 @@ import time
 import numpy as np
 import pytest
 
-from seldon.actions import camera as camera_mod
-from seldon.actions.camera import Camera
-from seldon.actions.terminal import Terminal
 from seldon.core.types import ActionContext, Utterance
+from seldon.tools import camera as camera_mod
+from seldon.tools.camera import Camera
+from seldon.tools.terminal import Terminal
 
 
 def make_ctx(answer: bool = True, speaker: str | None = "alice") -> tuple[ActionContext, list[str]]:
@@ -302,8 +302,8 @@ async def test_no_camera(monkeypatch):
 def test_camera_module_registered():
     from seldon.core import registry
 
-    assert registry.resolve("actions", "camera") is camera_mod.Camera
-    assert registry.resolve("actions", "terminal") is Terminal
+    assert registry.resolve("tools", "camera") is camera_mod.Camera
+    assert registry.resolve("tools", "terminal") is Terminal
 
 
 # --- accusés de réception ---
@@ -316,7 +316,7 @@ def test_acknowledgement_varies_without_repeating():
 
 
 def test_acknowledgement_follows_the_request():
-    from seldon.actions import terminal
+    from seldon.tools import terminal
 
     t = Terminal()
     disk = dict(terminal._ACK_KINDS)[frozenset({"df", "du", "free", "lsblk", "findmnt"})]
@@ -326,9 +326,9 @@ def test_acknowledgement_follows_the_request():
 
 
 def test_contextual_acknowledgements_of_other_actions():
-    from seldon.actions.claude_code import ClaudeCode
-    from seldon.actions.conversations import Conversations
-    from seldon.actions.feishin import Feishin
+    from seldon.tools.claude_code import ClaudeCode
+    from seldon.tools.conversations import Conversations
+    from seldon.tools.feishin import Feishin
 
     music = Feishin()
     assert music.acknowledge({"command": "pause"}) is None

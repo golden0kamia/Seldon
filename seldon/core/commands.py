@@ -138,9 +138,18 @@ async def _delete(assistant: Assistant, args: str) -> str | None:
     return "Conversation supprimée."
 
 
-@command("actions", "outils", help="Liste les actions disponibles pour le cerveau")
+@command("actions", "outils", help="Liste les tools, serveurs MCP et skills du cerveau")
 async def _actions(assistant: Assistant, args: str) -> str | None:
-    return "Actions : " + ", ".join(sorted(assistant.actions)) + "."
+    from seldon.mcp.base import MCPAction
+    from seldon.skills.base import Skills
+
+    groups: dict[str, list[str]] = {"Tools": [], "MCP": [], "Skills": []}
+    for name, action in assistant.actions.items():
+        if isinstance(action, Skills):
+            groups["Skills"] += action.skills
+        else:
+            groups["MCP" if isinstance(action, MCPAction) else "Tools"].append(name)
+    return " ".join(f"{label} : {', '.join(sorted(names))}." for label, names in groups.items() if names)
 
 
 @command("help", "aide", help="Affiche cette aide")

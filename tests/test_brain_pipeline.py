@@ -3,12 +3,12 @@ from types import SimpleNamespace as NS
 import pytest
 from anthropic.types import TextBlock, ToolUseBlock
 
-from seldon.actions.speak import Speak
 from seldon.brain.claude import ClaudeBrain
 from seldon.core.pipeline import MUTE_SIGNALS, Assistant
 from seldon.core.types import Image, Utterance
 from seldon.speakers.base import NoSpeakerId
 from seldon.stt.text import TextInput
+from seldon.tools.speak import Speak
 from seldon.tts.base import TTSEngine
 
 
@@ -77,7 +77,7 @@ async def test_final_text_spoken_when_no_speak_call():
 
 
 async def test_unknown_action_and_images_in_tool_result():
-    from seldon.actions.base import Action
+    from seldon.core.action import Action
     from seldon.core.types import ActionResult
 
     class Cam(Action):
@@ -101,7 +101,7 @@ async def test_unknown_action_and_images_in_tool_result():
 
 
 def slow_action():
-    from seldon.actions.base import Action
+    from seldon.core.action import Action
     from seldon.core.types import ActionResult
 
     class Slow(Action):
@@ -207,7 +207,7 @@ async def test_mute_signals_reach_stt_while_running():
 
 
 def failing_action():
-    from seldon.actions.base import Action
+    from seldon.core.action import Action
 
     class Boom(Action):
         name, description = "boom", "échoue"
@@ -284,7 +284,7 @@ async def test_memory_failure_does_not_mask_the_answer(tmp_path):
 
 
 async def test_failing_acknowledgement_does_not_break_the_action():
-    from seldon.actions.base import Action
+    from seldon.core.action import Action
     from seldon.core.types import ActionResult
 
     class Odd(Action):

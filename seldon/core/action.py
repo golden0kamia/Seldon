@@ -1,8 +1,17 @@
 """Contrat des actions que le cerveau peut déclencher.
 
-Une action = un outil exposé au modèle. Pour en ajouter une :
+Une action = un outil exposé au modèle. Elles se rangent en trois familles :
 
-    @register("actions", "meteo")
+- les tools (``seldon/tools``) : code Python qui agit directement (terminal,
+  caméra, musique, bureau…), activés sous ``tools:`` dans ``config.yaml`` ;
+- les serveurs MCP (``seldon/mcp``) : services externes dont les outils sont
+  exposés tels quels (Home Assistant, Nextcloud), activés sous ``mcp:`` ;
+- les skills (``skills/<nom>/SKILL.md``) : des consignes, sans code, que le
+  cerveau charge quand une tâche s'y prête et qu'il suit avec les tools.
+
+Pour ajouter un tool :
+
+    @register("tools", "meteo")
     class Weather(Action):
         name = "get_weather"
         description = "Donne la météo d'une ville."
@@ -12,7 +21,7 @@ Une action = un outil exposé au modèle. Pour en ajouter une :
         async def run(self, params, ctx):
             return ActionResult(text="...")
 
-puis l'activer dans ``config.yaml`` sous ``actions:``.
+puis l'activer dans ``config.yaml`` sous ``tools:``.
 """
 
 from __future__ import annotations

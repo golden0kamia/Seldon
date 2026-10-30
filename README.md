@@ -8,14 +8,26 @@ micro ─► STT (faster-whisper + VAD) ─► identification du locuteur (Resem
                                               ▼
           cerveau : LLM local (llama.cpp, Ollama), Claude ou OpenAI (+ secours)
                                               │ appels d'outils
-              ┌───────────────┬───────────────┼────────────────┐
-              ▼               ▼               ▼                ▼
-          speak (TTS)   run_shell_command  capture_image   … futures actions
-          Piper
+              ┌───────────────────────────────┼───────────────────────────────┐
+              ▼                               ▼                               ▼
+     tools (seldon/tools)            serveurs MCP (seldon/mcp)      skills (skills/<nom>/)
+  speak, run_shell_command,          Home Assistant, Nextcloud      consignes chargées à la
+  capture_image, musique, PC…                                       demande (SKILL.md)
 ```
 
 Le cerveau reçoit « [date | locuteur : X] texte » et décide quelles actions
 lancer. La réponse à l'utilisateur est elle-même une action (`speak`).
+Les actions se rangent en trois familles, chacune sa section de `config.yaml` :
+
+- **tools** (`tools:`) : code Python qui agit directement — parler, terminal,
+  caméra, musique, bureau du PC, Claude Code, conversations, voix ;
+- **MCP** (`mcp:`) : serveurs MCP externes dont les outils sont proposés au
+  cerveau — Home Assistant, Nextcloud ;
+- **skills** (`skills:`) : des consignes sans code, qui disent au cerveau comment
+  mener un type de demande avec les tools et MCP (voir [Skills](#skills)).
+
+L'ancienne liste unique `actions:` est encore lue (et répartie entre tools et
+MCP) ; l'interface la convertit au premier enregistrement.
 
 Quand une action prend la main (commande terminal, caméra, Claude Code,
 musique, recherche dans les conversations), Seldon prévient aussitôt qu'il a
@@ -131,8 +143,8 @@ variables ne sont pas transmises aux commandes lancées par l'action terminal
 ```bash
 python -m seldon                    # mode vocal complet (config.yaml) ; Ctrl+C ou SIGTERM : arrêt propre
 python -m seldon --text             # clavier + console ; "Bastien: bonjour" simule un locuteur
-python -m seldon.tools.enroll Bastien   # enregistre une empreinte vocale
-python -m seldon.tools.wakeword         # entraîne le mot d'éveil sur votre voix
+python -m seldon.cli.enroll Bastien   # enregistre une empreinte vocale
+python -m seldon.cli.wakeword         # entraîne le mot d'éveil sur votre voix
 python -m pytest                    # tests (sans micro, caméra ni modèle)
 ```
 
@@ -144,8 +156,8 @@ obligatoire (« quitter » tapé seul part au cerveau comme une phrase ordinaire
 comme pour passer des arguments. Un numéro désigne une ligne de la dernière
 liste affichée par `conversations`.
 
-Ces commandes demandent la phrase exacte. Avec l'action `controle` (dans
-`actions:`), on peut aussi le demander librement (« tu peux couper ton micro ? »,
+Ces commandes demandent la phrase exacte. Avec le tool `controle` (dans
+`tools:`), on peut aussi le demander librement (« tu peux couper ton micro ? »,
 « éteins-toi, Seldon ») : le cerveau coupe le micro ou arrête Seldon après sa
 réponse. Un simple « stop » ou « tais-toi » ne fait que l'interrompre. Le micro
 coupé ne se rétablit qu'avec le bouton **🎙 Micro** du Journal, puisque plus
@@ -329,7 +341,7 @@ ses albums ou ses titres.
 
 ### Domotique : Home Assistant
 
-L'action `home_assistant` pilote la maison (lumières, prises, volets,
+Le serveur MCP `home_assistant` (section `mcp:`) pilote la maison (lumières, prises, volets,
 chauffage, médias, minuteurs…) via le serveur MCP de Home Assistant. Tous les
 outils d'Assist (HassTurnOn, HassLightSet, GetLiveContext…, et vos scripts
 exposés) passent par un seul outil `home_assistant`.
@@ -354,7 +366,7 @@ garage (`confirm_domains`, `confirm_keywords`, `confirm_tools`) ;
 
 ### Nextcloud
 
-L'action `nextcloud` donne accès aux notes, à l'agenda (événements et tâches) et
+Le serveur MCP `nextcloud` (section `mcp:`) donne accès aux notes, à l'agenda (événements et tâches) et
 aux contacts de Nextcloud via
 [nextcloud-mcp-server](https://github.com/cbcoutinho/nextcloud-mcp-server), un
 serveur MCP lancé à côté de Seldon. Comme pour Home Assistant, tous ses outils
@@ -409,13 +421,13 @@ Seldon reconnaît les personnes à leur voix. Quand une voix n'est pas encore
 enregistrée, il répond puis demande son prénom ; dès que la personne le donne
 (ou qu'on la présente : « c'est Paul, un ami »), il enregistre sa voix à partir
 des phrases qu'elle vient de prononcer, via l'action `voix`. Pas besoin de
-passer par `seldon.tools.enroll`, qui reste utile pour une empreinte plus
+passer par `seldon.cli.enroll`, qui reste utile pour une empreinte plus
 précise (phrases lues au calme). On peut aussi lui demander qui il connaît, ou
 d'oublier une voix (avec confirmation). Ajouter une voix inconnue à une voix
 déjà enregistrée (« je suis Bastien ») demande une **confirmation** : sinon,
 n'importe qui pourrait prendre l'identité, et les droits, d'un admin. Une voix inconnue reste
 enregistrable pendant `unknown_memory_s` (10 min par défaut) ; retirer `voix`
-de `actions` désactive ce comportement.
+de `tools` désactive ce comportement.
 
 Les voix **s'affinent avec l'usage** : une phrase reconnue avec certitude
 (`adapt_threshold`, et nettement devant toute autre voix) est ajoutée à
@@ -445,7 +457,7 @@ ne lui est visiblement pas adressé.
 
 **Entraîner le mot d'éveil** : Whisper écrit parfois un nom propre de travers
 (« Celdon », « Sel don »…), et le mot d'éveil n'est alors pas reconnu.
-`python -m seldon.tools.wakeword` fait prononcer le mot d'éveil une dizaine de
+`python -m seldon.cli.wakeword` fait prononcer le mot d'éveil une dizaine de
 fois (seul ou en début de phrase), retient les transcriptions qui diffèrent,
 puis fait lire quelques phrases sans le mot d'éveil et écarte toute variante
 qui y apparaît en tête (elle réveillerait Seldon à tort). Les variantes sont
@@ -481,20 +493,49 @@ haut-parleurs forts, monter `barge_in_db` (ex. -25) ou mettre
 | `seldon/stt/` | Parole → texte | `STTEngine.listen()` produit des `Utterance` |
 | `seldon/speakers/` | Qui parle ? | `SpeakerIdentifier.identify(utterance)` |
 | `seldon/brain/` | Décision | `Brain.handle(utterance, actions, execute)` |
-| `seldon/actions/` | Outils du cerveau | `Action.run(params, ctx) -> ActionResult` |
+| `seldon/tools/` | Tools du cerveau (Python) | `Action.run(params, ctx) -> ActionResult` (`seldon/core/action.py`) |
+| `seldon/mcp/` | Client MCP et serveurs branchés (Home Assistant, Nextcloud) | `MCPAction` : un outil par serveur |
+| `seldon/skills/` | Chargement des skills (`skills/<nom>/SKILL.md`) | outil `skill` |
+| `seldon/cli/` | Outils hors ligne : `enroll`, `wakeword` | `python -m seldon.cli.…` |
 | `seldon/tts/` | Texte → parole | `TTSEngine.speak(text)` |
 | `seldon/core/` | Pipeline, registre de plugins, bus d'événements, mémoire, écriture privée des fichiers (`storage.py`), balises lues par l'interface (`tags.py`) | |
 | `seldon/gui/` | Interface Qt 6 (paramètres, voix et conversations enregistrées, fichiers, éditeur, journal, schéma des sous-systèmes, thème) | lit les plugins par AST, sans les importer |
 
-### Ajouter une action
+### Skills
+
+Un skill est une marche à suivre écrite en français, sans code : un dossier
+`skills/<nom>/` avec un `SKILL.md` dont l'en-tête dit **quand** l'utiliser.
+
+```markdown
+---
+name: bilan-du-matin
+description: Fait le point de la journée quand on le demande (agenda, tâches, maison).
+---
+1. Agenda : outil `nextcloud`, `nc_calendar_get_upcoming_events`…
+2. Réponds avec `speak` en trois ou quatre phrases.
+```
+
+Seuls le nom et la description sont envoyés au cerveau à chaque échange, dans
+l'outil `skill` ; quand une demande correspond, il appelle `skill` pour lire les
+consignes, puis les suit avec les tools et serveurs MCP activés. Les autres
+fichiers du dossier (modèles, listes…) se lisent avec le paramètre `file`, sans
+pouvoir sortir du dossier. Les consignes sont relues à chaque appel : une
+modification s'applique sans redémarrer (pas le nom ni la description).
+
+Pour activer un skill, ajoutez son nom (ou le chemin de son dossier) à
+`skills:` dans `config.yaml`, ou cochez-le dans *Paramètres → Skills* ; le
+bouton *Nouveau skill* y crée un `SKILL.md` à compléter. Exemple fourni :
+`skills/bilan-du-matin`.
+
+### Ajouter un tool
 
 ```python
-# seldon/actions/meteo.py
-from seldon.actions.base import Action
+# seldon/tools/meteo.py
+from seldon.core.action import Action
 from seldon.core.registry import register
 from seldon.core.types import ActionResult
 
-@register("actions", "meteo")
+@register("tools", "meteo")
 class Weather(Action):
     name = "get_weather"
     description = "Donne la météo actuelle d'une ville."
@@ -506,7 +547,9 @@ class Weather(Action):
 ```
 
 Puis l'ajouter au dictionnaire `_BUILTINS` de `seldon/core/registry.py` et à la
-liste `actions:` de `config.yaml`. Une classe hors du projet peut aussi être
+liste `tools:` de `config.yaml`. Un nouveau serveur MCP dérive de `MCPAction`
+(`seldon/mcp/base.py`), s'enregistre avec `@register("mcp", …)` et s'active sous
+`mcp:`. Une classe hors du projet peut aussi être
 référencée directement : `engine: mon_paquet.module:MaClasse`.
 
 Le même mécanisme vaut pour les autres étages (nouveau STT, TTS, cerveau…).

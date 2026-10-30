@@ -21,10 +21,10 @@ import base64
 import logging
 from typing import Any
 
-from seldon.actions.base import Action
 from seldon.brain import history
 from seldon.brain.base import ActionExecutor, Brain, ends_turn
 from seldon.brain.prompts import STEP_LIMIT_REPLY, SYSTEM_PROMPT, user_message
+from seldon.core.action import Action
 from seldon.core.errors import SeldonError
 from seldon.core.registry import register
 from seldon.core.types import ActionResult, Utterance
@@ -57,7 +57,7 @@ def _result_content(result: ActionResult) -> list[dict[str, Any]]:
 class ClaudeBrain(Brain):
     def __init__(
         self,
-        auth: str = "api",                 # api | abonnement
+        auth: str = "api",                 # api | abonnement — clé ANTHROPIC_API_KEY au token, ou compte claude.ai
         model: str = "claude-opus-5-5",
         effort: str = "low",               # low | medium | high | xhigh | max
         max_tokens: int = 16000,

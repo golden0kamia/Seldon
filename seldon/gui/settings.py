@@ -7,18 +7,21 @@ Chaque champ modifie directement le document ``ruamel`` (commentaires conservés
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Callable
 
 from PySide6.QtCore import QFileSystemWatcher, QRect, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QCheckBox, QComboBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QStackedWidget,
     QToolButton, QVBoxLayout, QWidget,
 )
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 from seldon.config import Config
+from seldon.skills import base as skills
+from seldon.core import registry
 from seldon.core.errors import describe
 from seldon.gui import configdoc, theme
 from seldon.gui.brainform import BackupEditor, BrainEditor
@@ -28,6 +31,13 @@ from seldon.gui.records import ConversationsView, RecordsView, SpeakersView
 from seldon.gui.widgets import FIXED_CHOICES, guard_wheel, hint_label, make_editor  # noqa: F401 (réexportés)
 
 PACKAGE = Path(__file__).resolve().parent.parent
+SKILL_NAME = re.compile(r"[a-z0-9][a-z0-9_-]*")
+SKILL_TEMPLATE = """---
+name: {name}
+description: À compléter — quand le cerveau doit utiliser ce skill (« Quand on demande… »).
+---
+Consignes à suivre, étape par étape, avec les tools et serveurs MCP activés.
+"""
 
 SECTIONS = [  # (clé, titre, catégorie de plugins)
     ("stt", "Écoute (STT)", "stt"),
@@ -126,10 +136,14 @@ def _engine_combo(plugins: dict[str, PluginInfo], current: str) -> QComboBox:
 
 
 class StageEditor(QWidget):
-    """Moteur + options d'un étage (``{engine, options}``)."""
+    """Moteur + options d'un étage (``{engine, options}``).
+
+    ``choose=False`` : moteur fixe, sans sélecteur (tools et serveurs MCP, où le
+    moteur est l'élément lui-même).
+    """
 
     def __init__(self, node: CommentedMap, plugins: dict[str, PluginInfo], on_change: Callable[[], None],
-                 reserve: bool = True) -> None:
+                 reserve: bool = True, choose: bool = True) -> None:
         super().__init__()
         self.node, self.plugins, self.on_change = node, plugins, on_change
         self.reserve = reserve   # hauteur de la plus longue description : les champs restent en place
@@ -137,14 +151,17 @@ class StageEditor(QWidget):
         self.combo = _engine_combo(plugins, engine)
         self.doc = hint_label("")
         self.form = OptionsForm(node["options"], self._known(engine), on_change)
-        head = QHBoxLayout()
-        head.setSpacing(theme.PAD)
-        head.addWidget(theme.caption("moteur"))
-        head.addWidget(self.combo, 1)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(theme.SPACE)
-        lay.addLayout(head)
+        if choose:
+            head = QHBoxLayout()
+            head.setSpacing(theme.PAD)
+            head.addWidget(theme.caption("moteur"))
+            head.addWidget(self.combo, 1)
+            lay.addLayout(head)
+        else:
+            self.combo.hide()
         lay.addWidget(self.doc)
         lay.addWidget(self.form)
         self._show_doc(engine)
@@ -184,9 +201,13 @@ class StageEditor(QWidget):
 
 
 class ActionsPage(QWidget):
-    def __init__(self, actions: CommentedSeq, plugins: dict[str, PluginInfo], on_change: Callable[[], None]) -> None:
+    """Liste de tools ou de serveurs MCP (``{engine, options}``), avec leurs options."""
+
+    def __init__(self, actions: CommentedSeq, plugins: dict[str, PluginInfo], on_change: Callable[[], None],
+                 hint: str = "", noun: str = "l'action") -> None:
         super().__init__()
         self.actions, self.plugins, self.on_change = actions, plugins, on_change
+        self.hint, self.noun = hint, noun
         self.lay = QVBoxLayout(self)
         self.lay.setContentsMargins(0, 0, 0, 0)
         self.lay.setSpacing(theme.SPACE)
@@ -202,7 +223,7 @@ class ActionsPage(QWidget):
                     sub = item.layout().takeAt(0)
                     if sub.widget():
                         sub.widget().deleteLater()
-        self.lay.addWidget(hint_label("Outils que le cerveau peut appeler. L'ordre n'a pas d'importance."))
+        self.lay.addWidget(hint_label(self.hint))
         for i in range(len(self.actions)):
             node = configdoc.action_entry(self.actions, i)
             box = theme.NeuCard("inset", radius=16)
@@ -219,23 +240,21 @@ class ActionsPage(QWidget):
                 tools.addStretch(1)
             for text, tip, slot in (("↑", "Monter", lambda _=False, i=i: self._move(i, -1)),
                                     ("↓", "Descendre", lambda _=False, i=i: self._move(i, 1)),
-                                    ("✕", "Retirer cette action", lambda _=False, i=i: self._remove(i))):
+                                    ("✕", f"Retirer {self.noun}", lambda _=False, i=i: self._remove(i))):
                 b = QToolButton(text=text, toolTip=tip, autoRaise=True)
                 b.setAccessibleName(f"{tip} : {node.get('engine', '')}")
                 b.clicked.connect(slot)
                 tools.addWidget(b)
             v.addLayout(tools)
-            stage = StageEditor(node, self.plugins, self.on_change, reserve=False)
-            stage.combo.currentTextChanged.connect(lambda t, lbl=title: lbl.setText(t))
-            v.addWidget(stage)
+            v.addWidget(StageEditor(node, self.plugins, self.on_change, reserve=False, choose=False))
             self.lay.addWidget(box)
         used = {str(self.actions[i].get("engine")) for i in range(len(self.actions))}
         add_box = guard_wheel(QComboBox(editable=True))
-        add_box.setAccessibleName("Action à ajouter")
+        add_box.setAccessibleName(f"Ajouter {self.noun}")
         add_box.addItems([n for n in sorted(self.plugins) if n not in used])
         for i in range(add_box.count()):
             add_box.setItemData(i, self.plugins[add_box.itemText(i)].doc, Qt.ItemDataRole.ToolTipRole)
-        add = QPushButton("Ajouter l'action")
+        add = QPushButton(f"Ajouter {self.noun}")
         add.clicked.connect(lambda: self._add(add_box.currentText().strip()))
         line = QHBoxLayout()
         line.setSpacing(theme.SPACE)
@@ -263,6 +282,90 @@ class ActionsPage(QWidget):
             self.actions[i], self.actions[j] = self.actions[j], self.actions[i]
             self.on_change()
             self.rebuild()
+
+
+class SkillsPage(QWidget):
+    """Skills du dossier ``skills/`` : une case pour l'activer, un bouton pour l'éditer."""
+
+    open_requested = Signal(Path)
+
+    def __init__(self, doc: CommentedMap, folder: Path, on_change: Callable[[], None]) -> None:
+        super().__init__()
+        self.doc, self.folder, self.on_change = doc, folder, on_change
+        self.lay = QVBoxLayout(self)
+        self.lay.setContentsMargins(0, 0, 0, 0)
+        self.lay.setSpacing(theme.SPACE)
+        self.rebuild()
+
+    def _enabled(self) -> list[str]:
+        value = self.doc.get("skills")
+        return [str(v) for v in value] if isinstance(value, list) else []
+
+    def rebuild(self) -> None:
+        while self.lay.count():
+            item = self.lay.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                while item.layout().count():
+                    sub = item.layout().takeAt(0)
+                    if sub.widget():
+                        sub.widget().deleteLater()
+        self.lay.addWidget(hint_label(f"Dossiers {self.folder.name}/<nom>/SKILL.md : la description dit au "
+                                      "cerveau quand charger les consignes, qu'il suit avec les tools et MCP."))
+        enabled = self._enabled()
+        for name in sorted(set(skills.available(self.folder)) | set(enabled)):
+            row = QHBoxLayout()
+            row.setSpacing(theme.SPACE)
+            box = QCheckBox(name, checked=name in enabled)
+            box.toggled.connect(lambda on, n=name: self._toggle(n, on))
+            row.addWidget(box)
+            try:
+                about = skills.load(name, self.folder).description
+            except Exception as e:  # noqa: BLE001 — message montré tel quel
+                about = f"{OptionsForm.WARNING} {describe(e)}"
+            row.addWidget(hint_label(about), 1)
+            file = skills.skill_dir(name, self.folder) / skills.SKILL_FILE
+            edit = QToolButton(text="✎", toolTip=f"Ouvrir {file.name}", autoRaise=True, enabled=file.is_file())
+            edit.setAccessibleName(f"Ouvrir le skill {name}")
+            edit.clicked.connect(lambda _=False, f=file: self.open_requested.emit(f))
+            row.addWidget(edit)
+            self.lay.addLayout(row)
+        self.new_name = QLineEdit(placeholderText="nom-du-skill")
+        self.new_name.setAccessibleName("Nom du nouveau skill")
+        create = QPushButton("Nouveau skill")
+        create.clicked.connect(lambda: self.create(self.new_name.text().strip()))
+        line = QHBoxLayout()
+        line.setSpacing(theme.SPACE)
+        line.addWidget(self.new_name, 1)
+        line.addWidget(create)
+        line.addStretch(1)
+        self.lay.addLayout(line)
+        self.lay.addStretch(1)
+
+    def _toggle(self, name: str, on: bool) -> None:
+        value = self.doc.get("skills")
+        if not isinstance(value, CommentedSeq):
+            value = self.doc["skills"] = CommentedSeq(value or [])
+        if on and name not in value:
+            value.append(name)
+        elif not on and name in value:
+            value.remove(name)
+        self.on_change()
+
+    def create(self, name: str) -> Path | None:
+        """Crée ``skills/<name>/SKILL.md`` (modèle à compléter), l'active et l'ouvre."""
+        if not SKILL_NAME.fullmatch(name):
+            QMessageBox.warning(self, "Nouveau skill", "Nom attendu : lettres minuscules, chiffres et tirets.")
+            return None
+        file = self.folder / name / skills.SKILL_FILE
+        if not file.exists():
+            file.parent.mkdir(parents=True, exist_ok=True)
+            write_atomic(file, SKILL_TEMPLATE.format(name=name).encode("utf-8"))
+        self._toggle(name, True)
+        self.rebuild()
+        self.open_requested.emit(file)
+        return file
 
 
 def validate(text: str) -> str | None:
@@ -407,7 +510,7 @@ class SettingsPanel(QWidget):
             self.reloaded.emit()
             return
 
-        reserved = {k for k, _t, _c in SECTIONS} | {"actions", "memory"}
+        reserved = {k for k, _t, _c in SECTIONS} | {"tools", "mcp", "skills", "actions", "memory"}
         general = OptionsForm(self.doc, {}, self._changed,
                               keys=lambda k: k not in reserved, extensible=False)
         self._page("Général", general, "Réglages globaux de l'assistant.")
@@ -427,12 +530,20 @@ class SettingsPanel(QWidget):
             else:
                 editor = StageEditor(node, self.plugins.get(cat, {}), self._changed)
             self._page(title, editor, extra=extra)
-        actions = self.doc.get("actions")
-        if not isinstance(actions, CommentedSeq):
-            actions = self.doc["actions"] = CommentedSeq(actions or ["speak"])
-        self._page("Actions", ActionsPage(actions, self.plugins.get("actions", {}), self._changed))
+        migrated = configdoc.split_actions(self.doc, registry.category_of)   # ancien format « actions: »
+        for key, title, intro, noun, default in (
+                ("tools", "Tools", "Actions en Python que le cerveau peut appeler. L'ordre n'a pas d'importance.",
+                 "le tool", ["speak"]),
+                ("mcp", "MCP", "Serveurs MCP : leurs outils sont proposés au cerveau.", "le serveur MCP", [])):
+            seq = self.doc.get(key)
+            if not isinstance(seq, CommentedSeq):
+                seq = self.doc[key] = CommentedSeq(seq or default)
+            self._page(title, ActionsPage(seq, self.plugins.get(key, {}), self._changed, intro, noun))
+        skill_page = SkillsPage(self.doc, self._data_dir(None, skills.SKILLS_DIR), self._changed)
+        skill_page.open_requested.connect(self.open_requested.emit)
+        self._page("Skills", skill_page)
         self.nav.setCurrentRow(min(row, self.nav.count() - 1))
-        self._set_dirty(False)
+        self._set_dirty(migrated)   # à enregistrer pour adopter tools / mcp
         self.reloaded.emit()
 
     def _records(self, view: RecordsView) -> RecordsView:

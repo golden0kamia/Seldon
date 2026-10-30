@@ -221,7 +221,7 @@ class ResemblyzerID(SpeakerIdentifier):
         return sum(same)
 
     def known_speakers(self) -> list[str]:
-        """Voix chargées et fichiers d'empreinte présents (ajoutés par ``seldon.tools.enroll``…)."""
+        """Voix chargées et fichiers d'empreinte présents (ajoutés par ``seldon.cli.enroll``…)."""
         on_disk = {p.stem for p in self.voices_dir.glob("*.npy")}
         return sorted(set(self.voiceprints) | on_disk, key=str.casefold)
 

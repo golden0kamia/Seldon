@@ -1,5 +1,8 @@
 """Orchestration : STT -> identification du locuteur -> cerveau -> actions.
 
+Les actions proposées au cerveau sont les tools, les serveurs MCP et, s'il y a
+des skills, l'outil ``skill`` qui en donne les consignes (voir ``seldon.skills``).
+
 Attention : si l'STT utilise des mots d'éveil, Seldon répond aux phrases qui en
 commencent par un, puis reste attentif ``follow_up_s`` secondes après chaque
 échange (on peut lui répondre sans le rappeler). Ce qui est dit hors de ces
@@ -26,16 +29,17 @@ import time
 from collections import deque
 from typing import Any
 
-from seldon.actions.base import Action
 from seldon.brain.base import Brain
 from seldon.brain.fallback import FallbackBrain
 from seldon.brain.prompts import neutralize
 from seldon.config import Config
 from seldon.core import commands, registry, tags
+from seldon.core.action import Action
 from seldon.core.errors import SeldonError, describe, log_error, spoken
 from seldon.core.events import EventBus
 from seldon.core.memory import ConversationMemory
 from seldon.core.types import ActionContext, ActionResult, ConfirmFn, Utterance
+from seldon.skills.base import Skills
 from seldon.speakers.base import SpeakerIdentifier
 from seldon.stt.base import STTEngine
 from seldon.stt.text import read_line
@@ -152,7 +156,8 @@ class Assistant:
             speakers=build("speakers", cfg.speakers),
             brain=brain,
             tts=build("tts", cfg.tts),
-            actions=[build("actions", a) for a in cfg.actions],
+            actions=[*(build("tools", t) for t in cfg.tools), *(build("mcp", m) for m in cfg.mcp),
+                     *([Skills(cfg.skills)] if cfg.skills else [])],
             confirm=CONFIRMERS[cfg.confirm],
             enable_commands=cfg.commands,
             memory=memory,

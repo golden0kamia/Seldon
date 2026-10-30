@@ -9,10 +9,10 @@ import time
 
 import pytest
 
-from seldon.actions.conversations import Conversations
 from seldon.core import memory as memory_mod
 from seldon.core.memory import ConversationMemory
 from seldon.core.types import ActionContext, Utterance
+from seldon.tools.conversations import Conversations
 from tests.test_memory import EchoBrain, answers, build
 
 

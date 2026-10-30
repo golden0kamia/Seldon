@@ -8,8 +8,8 @@ import json
 import httpx
 import pytest
 
-from seldon.actions.nextcloud import Nextcloud
 from seldon.core.types import ActionContext
+from seldon.mcp.nextcloud import Nextcloud
 
 URL = "http://nc.test/mcp"
 

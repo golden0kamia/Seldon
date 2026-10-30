@@ -262,12 +262,12 @@ class SpeakersView(RecordsView):
                         + ("<br>• …" if len(convs) > 8 else "") + "</p>")
         else:
             rows.append("<p>Aucune conversation enregistrée avec cette voix.</p>")
-        rows.append(f"<p>Ajouter des échantillons : <code>python -m seldon.tools.enroll {html.escape(key)}</code></p>")
+        rows.append(f"<p>Ajouter des échantillons : <code>python -m seldon.cli.enroll {html.escape(key)}</code></p>")
         return "".join(rows)
 
     def empty_text(self, folder: Path) -> str:
         return (f"Aucune voix enregistrée dans {_home(folder, self.base)}.\n\n"
-                "Pour en ajouter une : python -m seldon.tools.enroll <Nom>")
+                "Pour en ajouter une : python -m seldon.cli.enroll <Nom>")
 
 
 class ConversationsView(RecordsView):

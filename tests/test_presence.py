@@ -5,13 +5,13 @@ from __future__ import annotations
 import asyncio
 import time
 
-from seldon.actions.speak import Speak
 from seldon.brain.prompts import user_message
 from seldon.core.memory import ConversationMemory, _duration
 from seldon.core.pipeline import Assistant
 from seldon.core.types import ActionContext, Utterance
 from seldon.speakers.base import NoSpeakerId
 from seldon.stt.base import STTEngine
+from seldon.tools.speak import Speak
 from seldon.tts.base import TTSEngine
 from tests.test_memory import EchoBrain, RecordingTTS
 

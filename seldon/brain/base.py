@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any, Awaitable, Callable
 
-from seldon.actions.base import Action
+from seldon.core.action import Action
 from seldon.core.types import ActionResult, Utterance
 
 # Appelé par le cerveau pour exécuter une action ; géré par le pipeline

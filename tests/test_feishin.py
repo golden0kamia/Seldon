@@ -10,9 +10,9 @@ import types
 
 import pytest
 
-from seldon.actions import feishin as mod
-from seldon.actions.feishin import Feishin, Mpris
 from seldon.core.types import ActionContext
+from seldon.tools import feishin as mod
+from seldon.tools.feishin import Feishin, Mpris
 
 SONG = {"id": "s1", "name": "A Horse With No Name", "artistName": "America", "album": "America",
         "duration": 251_540, "userFavorite": False, "userRating": 0, "_serverId": "srv"}

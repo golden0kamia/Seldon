@@ -6,8 +6,8 @@ import os
 
 import pytest
 
-from seldon.actions.terminal import BENIGN, SEVERE, STANDARD, Terminal
 from seldon.core.types import ActionContext, Utterance
+from seldon.tools.terminal import BENIGN, SEVERE, STANDARD, Terminal
 
 
 def make_ctx(answer: bool = True, speaker: str | None = "alice") -> tuple[ActionContext, list[str]]:

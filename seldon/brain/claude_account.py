@@ -26,9 +26,9 @@ import logging
 import shutil
 from typing import Any
 
-from seldon.actions.base import Action
 from seldon.brain.base import ActionExecutor, ends_turn
 from seldon.brain.prompts import STEP_LIMIT_REPLY, user_message
+from seldon.core.action import Action
 from seldon.core.errors import SeldonError
 from seldon.core.types import ActionResult, Utterance
 

@@ -22,7 +22,7 @@ import re
 import time
 from typing import Any, ClassVar
 
-from seldon.actions.base import Action
+from seldon.core.action import Action
 from seldon.core.errors import SeldonError, describe, redact
 from seldon.core.types import ActionContext, ActionResult
 

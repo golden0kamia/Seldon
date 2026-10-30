@@ -7,10 +7,10 @@ import stat
 import numpy as np
 import pytest
 
-from seldon.actions.voices import Voices
 from seldon.core.types import ActionContext, Utterance
 from seldon.speakers import resemblyzer_id
 from seldon.speakers.resemblyzer_id import ResemblyzerID, _safe_name
+from seldon.tools.voices import Voices
 from tests.test_stt_speakers import FakeEncoder, voice
 
 

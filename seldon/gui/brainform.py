@@ -269,6 +269,7 @@ class BrainEditor(QWidget):
         if not engine or engine == self.engine:
             return
         self.stash[self.engine] = self.options
+        configdoc.drop_comment(self.node, "engine")   # il décrivait le moteur quitté
         self.node["engine"] = engine
         self.node["options"] = self.stash.pop(engine, None) or CommentedMap()
         self.on_change()
@@ -295,6 +296,9 @@ class BrainEditor(QWidget):
 
         self.body.addWidget(theme.caption("connexion"))
         conn = _Section()
+        if "auth" in connection:   # clé API ou abonnement : choix en tête, il décide des lignes suivantes
+            connection.remove("auth")
+            self._add_row(conn, "auth")
         if uses_account(self.engine, self.options):
             label = QLabel("compte")
             label.setFont(theme.mono_font(10))
@@ -355,7 +359,9 @@ class BrainEditor(QWidget):
     def _add_row(self, section: _Section, key: str) -> None:
         param = self.params.get(key)
         value = self.options[key] if key in self.options else self._default(key)
-        comment = configdoc.comment(self.options, key) or (param.comment if param else "")
+        # option connue : aide et choix du moteur, pas du commentaire de config.yaml, pour que le
+        # cerveau principal et celui de secours aient le même formulaire pour un même moteur
+        comment = param.comment if param else configdoc.comment(self.options, key)
         choices = FIXED_CHOICES.get(key) or choices_from_comment(comment)
         if isinstance(value, str) and choices and value not in choices and not (param and param.default in choices):
             choices = []

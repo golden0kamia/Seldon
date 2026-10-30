@@ -2,7 +2,7 @@
 
 Le schéma est décrit ici (``BLOCKS``, ``LINKS``) d'après le pipeline : une phrase va
 du micro à la reconnaissance vocale, puis l'``Assistant`` l'identifie, la confie au
-cerveau, exécute les actions qu'il demande et fait parler la synthèse vocale. Seuls
+cerveau, exécute les actions (tools, MCP, skills) qu'il demande et fait parler la synthèse vocale. Seuls
 les moteurs disponibles dans chaque bloc sont lus du code (``plugins.discover``, par
 AST, sans rien importer). Un clic sur un bloc éclaire ses liens et le décrit ; un
 double-clic ouvre son fichier principal.
@@ -61,19 +61,23 @@ BLOCKS = [
     Block("tts", "Synthèse vocale", 3, 1, "Dit les réponses ; l'écoute est en pause pendant ce temps.",
           "tts/base.py", "tts"),
     Block("speaker_out", "Haut-parleur", 4, 1, "Sortie audio (ou console avec --text)."),
-    Block("tools", "Outils hors ligne", 0, 2, "seldon.tools : enrôlement des voix (enroll) et "
-          "variantes du mot d'éveil (wakeword), lus au démarrage.", "tools/enroll.py"),
+    Block("cli", "Outils hors ligne", 0, 2, "seldon.cli : enrôlement des voix (enroll) et "
+          "variantes du mot d'éveil (wakeword), lus au démarrage.", "cli/enroll.py"),
     Block("speakers", "Identification des voix", 1, 2, "Reconnaît qui parle à partir des voix "
           "enrôlées.", "speakers/base.py", "speakers"),
     Block("brain", "Cerveau", 2, 2, "Modèle de langage : reçoit la phrase et les outils, "
           "appelle des actions, renvoie la réponse.", "brain/base.py", "brain"),
-    Block("actions", "Actions", 3, 2, "Outils du cerveau, exécutés par le pipeline "
-          "(avec confirmation si besoin).", "actions/base.py", "actions"),
+    Block("tools", "Tools", 3, 2, "Actions en Python appelées par le cerveau, exécutées par le "
+          "pipeline (avec confirmation si besoin).", "core/action.py", "tools"),
     Block("memory", "Mémoire", 4, 2, "Conversations sauvegardées, reprise, notes de contexte "
           "et résumés des longues conversations.", "core/memory.py"),
     Block("commands", "Commandes locales", 1, 3, "« /commande » ou phrase reconnue : traitée sans "
           "le cerveau (couper le micro, quitter…).", "core/commands.py"),
-    Block("services", "Services externes", 3, 3, "Home Assistant, Nextcloud (MCP), Feishin, "
+    Block("skills", "Skills", 2, 3, "Consignes skills/<nom>/SKILL.md : le cerveau les charge "
+          "quand une demande s'y prête et les suit avec les tools.", "skills/base.py"),
+    Block("mcp", "Serveurs MCP", 3, 3, "Outils de serveurs MCP (Home Assistant, Nextcloud) proposés "
+          "au cerveau, exécutés par le pipeline.", "mcp/base.py", "mcp"),
+    Block("services", "Services externes", 4, 3, "Home Assistant, Nextcloud, Feishin, "
           "Claude Code, bureau du PC, caméra…"),
 ]
 
@@ -86,16 +90,19 @@ LINKS = [
     Link("stt", "pipeline", "Utterance"),
     Link("pipeline", "tts", "speak()"),
     Link("tts", "speaker_out", "voix"),
-    Link("tools", "stt", "mot d'éveil"),
-    Link("tools", "speakers", "voix"),
+    Link("cli", "stt", "mot d'éveil"),
+    Link("cli", "speakers", "voix"),
     Link("pipeline", "speakers", "identify()", both=True),
     Link("pipeline", "brain", "handle() ⇄ outils", both=True),
-    Link("pipeline", "actions", "run()"),
+    Link("pipeline", "tools", "run()"),
+    Link("pipeline", "mcp", "tools/call", at=0.8),
+    Link("brain", "skills", "consignes"),
     Link("pipeline", "memory", "tours · notes", both=True, at=0.7),
     Link("pipeline", "commands", "/commande", at=0.75),
-    Link("actions", "tts", "annonces", at=0.8),
-    Link("actions", "memory", "historique"),
-    Link("actions", "services", "HTTP · MCP"),
+    Link("tools", "tts", "annonces", at=0.8),
+    Link("tools", "memory", "historique"),
+    Link("tools", "services", "HTTP · D-Bus", at=0.6),
+    Link("mcp", "services", "MCP"),
 ]
 
 BOX_W, BOX_H, COL, ROW = 230, 72, 320, 160

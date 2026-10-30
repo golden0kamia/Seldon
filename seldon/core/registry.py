@@ -1,6 +1,7 @@
 """Registre de plugins générique.
 
-Chaque étage (stt, speakers, brain, tts, actions) a sa propre catégorie.
+Chaque étage (stt, speakers, brain, tts) a sa propre catégorie, de même que
+les actions du cerveau : tools (code Python) et mcp (serveurs MCP).
 Une implémentation s'enregistre avec un décorateur :
 
     @register("tts", "piper")
@@ -46,17 +47,20 @@ _BUILTINS: dict[str, dict[str, str]] = {
         "piper": "seldon.tts.piper",
         "pyttsx3": "seldon.tts.pyttsx3_tts",
     },
-    "actions": {
-        "speak": "seldon.actions.speak",
-        "terminal": "seldon.actions.terminal",
-        "camera": "seldon.actions.camera",
-        "conversations": "seldon.actions.conversations",
-        "voix": "seldon.actions.voices",
-        "feishin": "seldon.actions.feishin",
-        "home_assistant": "seldon.actions.home_assistant",
-        "nextcloud": "seldon.actions.nextcloud",
-        "desktop": "seldon.actions.desktop",
-        "controle": "seldon.actions.control",
+    "tools": {
+        "speak": "seldon.tools.speak",
+        "terminal": "seldon.tools.terminal",
+        "camera": "seldon.tools.camera",
+        "conversations": "seldon.tools.conversations",
+        "voix": "seldon.tools.voices",
+        "feishin": "seldon.tools.feishin",
+        "desktop": "seldon.tools.desktop",
+        "controle": "seldon.tools.control",
+        "claude_code": "seldon.tools.claude_code",
+    },
+    "mcp": {
+        "home_assistant": "seldon.mcp.home_assistant",
+        "nextcloud": "seldon.mcp.nextcloud",
     },
 }
 
@@ -163,6 +167,11 @@ def create(category: str, name: str, **options: Any) -> Any:
         raise
     except (TypeError, ValueError) as e:
         raise SeldonError(f"Option invalide pour {category} « {name} » : {e}") from e
+
+
+def category_of(name: str) -> str:
+    """Famille d'une action de l'ancienne liste ``actions:`` : « mcp » ou « tools »."""
+    return "mcp" if name in _BUILTINS["mcp"] or name in _REGISTRY.get("mcp", {}) else "tools"
 
 
 def available(category: str) -> list[str]:

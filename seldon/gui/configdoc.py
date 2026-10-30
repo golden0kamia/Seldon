@@ -17,6 +17,7 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from seldon.gui.fsutil import write_atomic
 
 STAGES = ("stt", "speakers", "brain", "tts")
+ACTION_LISTS = ("tools", "mcp", "actions")   # listes {engine, options} ; « actions » : ancien format
 
 
 def _yaml() -> YAML:
@@ -49,8 +50,9 @@ def to_text(doc: CommentedMap) -> str:
     doc = copy.deepcopy(doc)
     for key in STAGES:
         compact_stage(doc, key)
-    if isinstance(doc.get("actions"), CommentedSeq):
-        compact_actions(doc["actions"])
+    for key in ACTION_LISTS:
+        if isinstance(doc.get(key), CommentedSeq):
+            compact_actions(doc[key])
     return dumps(doc)
 
 
@@ -80,6 +82,20 @@ def comment(container: Any, key: Any) -> str:
     return first.lstrip("#").strip()
 
 
+def drop_comment(container: Any, key: Any) -> None:
+    """Retire le commentaire de fin de ligne d'une clé (les blocs commentés qui suivent restent)."""
+    try:
+        tokens = container.ca.items.get(key)
+    except AttributeError:
+        return
+    for tok in tokens or ():
+        for t in tok if isinstance(tok, list) else [tok]:
+            if t is not None and str(getattr(t, "value", "")).startswith("#"):
+                rest = t.value.split("\n", 1)[1] if "\n" in t.value else ""
+                t.value = "\n" + rest
+                return
+
+
 def stage(doc: CommentedMap, key: str) -> CommentedMap:
     """Section ``{engine, options}`` normalisée (une chaîne seule devient un dictionnaire)."""
     raw = doc.get(key)
@@ -101,6 +117,26 @@ def action_entry(actions: CommentedSeq, index: int) -> CommentedMap:
     if not isinstance(item.get("options"), CommentedMap):
         item["options"] = CommentedMap(item.get("options") or {})
     return item
+
+
+def split_actions(doc: CommentedMap, category_of: Any) -> bool:
+    """Répartit l'ancienne liste ``actions`` entre ``tools`` et ``mcp`` (``category_of(nom)``),
+    à la place de ``actions`` ; renvoie True si le document a changé."""
+    old = doc.get("actions")
+    if not isinstance(old, CommentedSeq):
+        return False
+    pos = list(doc).index("actions")
+    for key in ("tools", "mcp"):
+        if not isinstance(doc.get(key), CommentedSeq):
+            if key in doc:
+                del doc[key]
+            doc.insert(pos, key, CommentedSeq())
+            pos += 1
+    for item in old:
+        engine = item.get("engine") if isinstance(item, CommentedMap) else item
+        doc["mcp" if category_of(str(engine)) == "mcp" else "tools"].append(item)
+    del doc["actions"]
+    return True
 
 
 def compact_actions(actions: CommentedSeq) -> None:
