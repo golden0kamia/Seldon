@@ -82,6 +82,20 @@ def comment(container: Any, key: Any) -> str:
     return first.lstrip("#").strip()
 
 
+def drop_comment(container: Any, key: Any) -> None:
+    """Retire le commentaire de fin de ligne d'une clé (les blocs commentés qui suivent restent)."""
+    try:
+        tokens = container.ca.items.get(key)
+    except AttributeError:
+        return
+    for tok in tokens or ():
+        for t in tok if isinstance(tok, list) else [tok]:
+            if t is not None and str(getattr(t, "value", "")).startswith("#"):
+                rest = t.value.split("\n", 1)[1] if "\n" in t.value else ""
+                t.value = "\n" + rest
+                return
+
+
 def stage(doc: CommentedMap, key: str) -> CommentedMap:
     """Section ``{engine, options}`` normalisée (une chaîne seule devient un dictionnaire)."""
     raw = doc.get(key)

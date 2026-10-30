@@ -57,7 +57,7 @@ def _result_content(result: ActionResult) -> list[dict[str, Any]]:
 class ClaudeBrain(Brain):
     def __init__(
         self,
-        auth: str = "api",                 # api | abonnement
+        auth: str = "api",                 # api | abonnement — clé ANTHROPIC_API_KEY au token, ou compte claude.ai
         model: str = "claude-opus-5-5",
         effort: str = "low",               # low | medium | high | xhigh | max
         max_tokens: int = 16000,

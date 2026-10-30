@@ -715,6 +715,35 @@ def test_brain_form_follows_engine_and_keeps_keys_out_of_config(window, tmp_path
     assert s.save() and "sk-ant" not in (tmp_path / "config.yaml").read_text(encoding="utf-8")
 
 
+def test_brain_backup_form_matches_primary_for_same_engine(window, tmp_path):
+    from PySide6.QtWidgets import QComboBox, QLabel
+    from seldon.gui.brainform import BackupEditor, BrainEditor
+
+    doc = configdoc.loads("brain:\n  engine: llamacpp   # serveur local\n  options:\n"
+                          "    auth: abonnement   # api (au token) | abonnement (compte)\n"
+                          "  backup:\n    engine: claude\n    options: {auth: abonnement}\n")
+    node = configdoc.stage(doc, "brain")
+    brains = discover()["brain"]
+    primary = BrainEditor(node, brains, lambda: None, tmp_path / ".env")
+    primary._engine_changed("claude")
+    node["options"]["auth"] = "abonnement"   # même réglage, commentaire de config.yaml conservé
+    primary.rebuild()
+    backup_box = BackupEditor(node, brains, lambda: None, tmp_path / ".env")
+    backup = backup_box.editor
+
+    from PySide6.QtCore import QCoreApplication, QEvent
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)   # formulaires précédents détruits
+
+    def form(editor: BrainEditor) -> tuple[list[str], list[list[str]]]:
+        combos = [[box.itemText(i) for i in range(box.count())] for box in editor.findChildren(QComboBox)]
+        return [label.text() for label in editor.findChildren(QLabel)], combos
+
+    assert form(primary) == form(backup)
+    assert ["api", "abonnement"] in form(primary)[1]                     # auth : liste de choix des deux côtés
+    assert "Note" not in primary.doc.text()                             # commentaire de l'ancien moteur retiré
+    assert "serveur local" not in configdoc.dumps(doc)
+
+
 def test_brain_list_models_with_account(monkeypatch, tmp_path):
     from seldon.gui import brainform
 
