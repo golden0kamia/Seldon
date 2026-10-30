@@ -136,10 +136,14 @@ def _engine_combo(plugins: dict[str, PluginInfo], current: str) -> QComboBox:
 
 
 class StageEditor(QWidget):
-    """Moteur + options d'un étage (``{engine, options}``)."""
+    """Moteur + options d'un étage (``{engine, options}``).
+
+    ``choose=False`` : moteur fixe, sans sélecteur (tools et serveurs MCP, où le
+    moteur est l'élément lui-même).
+    """
 
     def __init__(self, node: CommentedMap, plugins: dict[str, PluginInfo], on_change: Callable[[], None],
-                 reserve: bool = True) -> None:
+                 reserve: bool = True, choose: bool = True) -> None:
         super().__init__()
         self.node, self.plugins, self.on_change = node, plugins, on_change
         self.reserve = reserve   # hauteur de la plus longue description : les champs restent en place
@@ -147,14 +151,17 @@ class StageEditor(QWidget):
         self.combo = _engine_combo(plugins, engine)
         self.doc = hint_label("")
         self.form = OptionsForm(node["options"], self._known(engine), on_change)
-        head = QHBoxLayout()
-        head.setSpacing(theme.PAD)
-        head.addWidget(theme.caption("moteur"))
-        head.addWidget(self.combo, 1)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(theme.SPACE)
-        lay.addLayout(head)
+        if choose:
+            head = QHBoxLayout()
+            head.setSpacing(theme.PAD)
+            head.addWidget(theme.caption("moteur"))
+            head.addWidget(self.combo, 1)
+            lay.addLayout(head)
+        else:
+            self.combo.hide()
         lay.addWidget(self.doc)
         lay.addWidget(self.form)
         self._show_doc(engine)
@@ -239,9 +246,7 @@ class ActionsPage(QWidget):
                 b.clicked.connect(slot)
                 tools.addWidget(b)
             v.addLayout(tools)
-            stage = StageEditor(node, self.plugins, self.on_change, reserve=False)
-            stage.combo.currentTextChanged.connect(lambda t, lbl=title: lbl.setText(t))
-            v.addWidget(stage)
+            v.addWidget(StageEditor(node, self.plugins, self.on_change, reserve=False, choose=False))
             self.lay.addWidget(box)
         used = {str(self.actions[i].get("engine")) for i in range(len(self.actions))}
         add_box = guard_wheel(QComboBox(editable=True))
