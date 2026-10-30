@@ -3,9 +3,9 @@
 Une action = un outil exposé au modèle. Elles se rangent en trois familles :
 
 - les tools (``seldon/tools``) : code Python qui agit directement (terminal,
-  caméra, musique, bureau…), activés sous ``tools:`` dans ``config.yaml`` ;
+  caméra, musique, bureau, Nextcloud…), activés sous ``tools:`` dans ``config.yaml`` ;
 - les serveurs MCP (``seldon/mcp``) : services externes dont les outils sont
-  exposés tels quels (Home Assistant, Nextcloud), activés sous ``mcp:`` ;
+  exposés tels quels (Home Assistant), activés sous ``mcp:`` ;
 - les skills (``skills/<nom>/SKILL.md``) : des consignes, sans code, que le
   cerveau charge quand une tâche s'y prête et qu'il suit avec les tools.
 

@@ -11,8 +11,9 @@ micro ─► STT (faster-whisper + VAD) ─► identification du locuteur (Resem
               ┌───────────────────────────────┼───────────────────────────────┐
               ▼                               ▼                               ▼
      tools (seldon/tools)            serveurs MCP (seldon/mcp)      skills (skills/<nom>/)
-  speak, run_shell_command,          Home Assistant, Nextcloud      consignes chargées à la
-  capture_image, musique, PC…                                       demande (SKILL.md)
+  speak, run_shell_command,          Home Assistant                 consignes chargées à la
+  capture_image, musique, PC,                                       demande (SKILL.md)
+  Nextcloud…
 ```
 
 Le cerveau reçoit « [date | locuteur : X] texte » et décide quelles actions
@@ -20,9 +21,9 @@ lancer. La réponse à l'utilisateur est elle-même une action (`speak`).
 Les actions se rangent en trois familles, chacune sa section de `config.yaml` :
 
 - **tools** (`tools:`) : code Python qui agit directement — parler, terminal,
-  caméra, musique, bureau du PC, Claude Code ;
+  caméra, musique, bureau du PC, Claude Code, Nextcloud ;
 - **MCP** (`mcp:`) : serveurs MCP externes dont les outils sont proposés au
-  cerveau — Home Assistant, Nextcloud ;
+  cerveau — Home Assistant ;
 - **skills** (`skills:`) : des consignes sans code, qui disent au cerveau comment
   mener un type de demande avec les tools et MCP (voir [Skills](#skills)).
 
@@ -371,34 +372,33 @@ garage (`confirm_domains`, `confirm_keywords`, `confirm_tools`) ;
 
 ### Nextcloud
 
-Le serveur MCP `nextcloud` (section `mcp:`) donne accès aux notes, à l'agenda (événements et tâches) et
-aux contacts de Nextcloud via
-[nextcloud-mcp-server](https://github.com/cbcoutinho/nextcloud-mcp-server), un
-serveur MCP lancé à côté de Seldon. Comme pour Home Assistant, tous ses outils
-(`nc_notes_search_notes`, `nc_calendar_get_upcoming_events`…) passent par un
-seul outil `nextcloud`.
+L'outil `nextcloud` (section `tools:`) parle directement à Nextcloud en WebDAV,
+sans serveur intermédiaire (`<NEXTCLOUD_HOST>/remote.php/dav`) :
+
+- **fichiers** (`files`) : lister, lire, écrire ou compléter, déplacer,
+  supprimer, chercher par nom ;
+- **notes** (`notes`) : les fichiers `.md` / `.txt` du dossier de l'application
+  Notes (`notes_folder`, catégories = sous-dossiers) : lister, lire, écrire ou
+  compléter, chercher dans le titre et le texte ;
+- **agenda** (`calendar`, CalDAV) : événements d'un ou plusieurs jours
+  (répétitions comprises), création ;
+- **tâches** (`tasks`, CalDAV) : tâches ouvertes (`days` : seulement celles
+  dues d'ici là, retards compris), création, marquer terminée ;
+- **contacts** (`contacts`, CardDAV) : recherche par nom, courriel ou téléphone.
 
 1. **Créer un mot de passe d'application** dans Nextcloud : *Paramètres
    personnels → Sécurité → Créer un nouveau mot de passe d'application*.
 2. **Le mettre dans `.env`** (voir [Identifiants](#identifiants)) :
    `NEXTCLOUD_HOST=https://cloud.example.com`, `NEXTCLOUD_USERNAME=…`,
    `NEXTCLOUD_PASSWORD=<mot de passe d'application>`.
-3. **Lancer le serveur MCP** : `./nextcloud-mcp.sh` (via `pipx run` ; il
-   n'écoute que la machine elle-même, sur `http://127.0.0.1:8000/mcp`, et
-   n'active que les notes, l'agenda et les contacts — `./nextcloud-mcp.sh -e
-   webdav` ajoute les fichiers). Avec Docker : `docker run -p
-   127.0.0.1:8000:8000 --env-file .env ghcr.io/cbcoutinho/nextcloud-mcp-server`.
+3. **Installer httpx** si besoin : `pip install -e '.[nextcloud]'`.
 
-Le serveur expose plus d'une centaine d'outils : seuls ceux des applications de
-`apps` sont proposés au modèle (`notes`, `calendar`, `contacts` par défaut ;
-aussi `webdav`, `deck`, `tables`, `cookbook`, `news`, `mail`, `sharing`,
-`talk`… ou `null` pour tout). Une **confirmation** est demandée avant de
-supprimer, déplacer, restaurer, envoyer ou partager (`confirm_words`,
-`confirm_tools`). Par défaut (`auth: none`) le serveur MCP détient seul les
-identifiants ; `auth: basic` les envoie depuis Seldon (serveur en mode
-`multi_user_basic`), `auth: bearer` envoie le jeton `NEXTCLOUD_MCP_TOKEN`. Si
-le serveur est injoignable au démarrage, Seldon démarre quand même et réessaie
-au premier appel.
+`apps` choisit les applications proposées au modèle, `calendars` limite les
+agendas consultés et `default_calendar` reçoit les nouveaux événements et
+tâches. Les chemins restent dans les fichiers de l'utilisateur (`..` refusé).
+Une **confirmation** est demandée avant de supprimer, de déplacer ou d'écraser
+un fichier ou une note ; `confirm_writes: true` la demande aussi pour chaque
+création ou modification.
 
 ### Contrôle du PC
 
@@ -500,7 +500,7 @@ haut-parleurs forts, monter `barge_in_db` (ex. -25) ou mettre
 | `seldon/speakers/` | Qui parle ? (et outil `voix`) | `SpeakerIdentifier.identify(utterance)`, `.actions()` |
 | `seldon/brain/` | Décision | `Brain.handle(utterance, actions, execute)` |
 | `seldon/tools/` | Tools du cerveau (Python) | `Action.run(params, ctx) -> ActionResult` (`seldon/core/action.py`) |
-| `seldon/mcp/` | Client MCP et serveurs branchés (Home Assistant, Nextcloud) | `MCPAction` : un outil par serveur |
+| `seldon/mcp/` | Client MCP et serveurs branchés (Home Assistant) | `MCPAction` : un outil par serveur |
 | `seldon/skills/` | Chargement des skills (`skills/<nom>/SKILL.md`) | outil `skill` |
 | `seldon/cli/` | Outils hors ligne : `enroll`, `wakeword` | `python -m seldon.cli.…` |
 | `seldon/tts/` | Texte → parole | `TTSEngine.speak(text)` |
@@ -517,7 +517,7 @@ Un skill est une marche à suivre écrite en français, sans code : un dossier
 name: bilan-du-matin
 description: Fait le point de la journée quand on le demande (agenda, tâches, maison).
 ---
-1. Agenda : outil `nextcloud`, `nc_calendar_get_upcoming_events`…
+1. Agenda : outil `nextcloud`, commande `events`…
 2. Réponds avec `speak` en trois ou quatre phrases.
 ```
 

@@ -21,7 +21,7 @@ def test_discover_reads_plugins_without_importing():
     assert {"stt", "speakers", "brain", "tts", "tools", "mcp"} <= set(plugins)
     thinking = plugins["brain"]["llamacpp"].params["thinking"]
     assert thinking.default is False and "raisonnement" in thinking.comment
-    assert "claude_code" in plugins["tools"] and "nextcloud" in plugins["mcp"]
+    assert "claude_code" in plugins["tools"] and "nextcloud" in plugins["tools"] and "home_assistant" in plugins["mcp"]
 
 
 def test_choices_from_comment():
@@ -759,12 +759,12 @@ def test_old_actions_list_is_split_into_tools_and_mcp():
     from seldon.config import Config
     from seldon.core import registry
 
-    doc = configdoc.loads("brain: claude\nactions:\n  - speak   # parle\n  - engine: nextcloud\n"
+    doc = configdoc.loads("brain: claude\nactions:\n  - speak   # parle\n  - engine: home_assistant\n"
                           "    options: {url: http://x/mcp}\nlog_level: INFO\n")
     assert configdoc.split_actions(doc, registry.category_of) and not configdoc.split_actions(doc, registry.category_of)
     assert list(doc) == ["brain", "tools", "mcp", "log_level"]
     cfg = Config.parse(configdoc.to_text(doc))
-    assert [t.engine for t in cfg.tools] == ["speak"] and [m.engine for m in cfg.mcp] == ["nextcloud"]
+    assert [t.engine for t in cfg.tools] == ["speak"] and [m.engine for m in cfg.mcp] == ["home_assistant"]
 
 
 def test_skills_page_creates_enables_and_opens_a_skill(window, tmp_path):

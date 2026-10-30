@@ -55,10 +55,10 @@ _BUILTINS: dict[str, dict[str, str]] = {
         "desktop": "seldon.tools.desktop",
         "controle": "seldon.tools.control",
         "claude_code": "seldon.tools.claude_code",
+        "nextcloud": "seldon.tools.nextcloud",
     },
     "mcp": {
         "home_assistant": "seldon.mcp.home_assistant",
-        "nextcloud": "seldon.mcp.nextcloud",
     },
 }
 

@@ -5,9 +5,10 @@ description: Fait le point de la journée quand on le demande (« bonjour, quoi 
 Rassemble ce qui suit avec les outils disponibles ; saute sans le dire une
 source dont l'outil n'est pas activé ou ne répond pas.
 
-1. Agenda : outil `nextcloud`, `nc_calendar_get_upcoming_events` pour la
-   journée. Retiens l'heure et le titre de chaque rendez-vous.
-2. Tâches : les tâches Nextcloud dues aujourd'hui ou en retard, s'il y en a.
+1. Agenda : outil `nextcloud`, commande `events` (aujourd'hui par défaut).
+   Retiens l'heure et le titre de chaque rendez-vous.
+2. Tâches : outil `nextcloud`, commande `tasks` avec `days` à 1 (dues
+   aujourd'hui ou en retard), s'il y en a.
 3. Maison : outil `home_assistant`, `GetLiveContext`. Ne garde que ce qui
    demande une attention (porte ou fenêtre ouverte, alarme, température
    inhabituelle, lumière allumée dans une pièce vide).

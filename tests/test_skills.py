@@ -73,9 +73,9 @@ def test_duplicate_skill_names_are_refused(tmp_path):
 
 
 def test_config_sections_and_old_actions_list():
-    cfg = Config.parse("tools: [speak, terminal]\nmcp: [{engine: nextcloud}]\nskills: [courses]\n")
+    cfg = Config.parse("tools: [speak, terminal]\nmcp: [{engine: home_assistant}]\nskills: [courses]\n")
     assert [t.engine for t in cfg.tools] == ["speak", "terminal"]
-    assert [m.engine for m in cfg.mcp] == ["nextcloud"] and cfg.skills == ["courses"]
+    assert [m.engine for m in cfg.mcp] == ["home_assistant"] and cfg.skills == ["courses"]
     old = Config.parse("actions: [speak, home_assistant, {engine: camera}]\n")
     assert [t.engine for t in old.tools] == ["speak", "camera"] and [m.engine for m in old.mcp] == ["home_assistant"]
     assert [t.engine for t in Config.parse("stt: text\n").tools] == ["speak"]   # rien d'indiqué : speak
