@@ -615,6 +615,28 @@ def test_journal_lines_levels_progress_and_confirmation(window):
     r.set_min_level(0)
 
 
+def test_journal_shows_conversation_and_reflections(window):
+    from seldon.gui import runner as rmod
+
+    r = window.runner
+    r.clear()
+    r.feed("2026-10-31 12:00:01,250 INFO seldon.conversation.locuteur: Bastien › quelle heure ?\n"
+           "2026-10-31 12:00:02,000 INFO seldon.reflexion: Il veut l'heure.\n  Je réponds.\n"
+           "2026-10-31 12:00:02,100 DEBUG seldon.action: horloge {}\n"
+           "2026-10-31 12:00:03,000 INFO seldon.conversation.seldon: Seldon › Il est midi.\n"
+           "2026-10-31 12:00:04,000 INFO seldon.core.pipeline: autre chose\n")
+    r._flush()
+    lines = r.log.toPlainText().split("\n")
+    assert lines[:2] == ["12:00:01  Bastien › quelle heure ?", "12:00:02  ⋯ Il veut l'heure."]
+    assert lines[2] == "          Je réponds."   # suite alignée sous le texte
+    assert "12:00:03  Seldon › Il est midi." in lines
+    r.set_min_level(rmod.CONVERSATION)
+    doc = r.log.document()
+    visible = [doc.findBlockByNumber(i).text() for i in range(doc.blockCount()) if doc.findBlockByNumber(i).isVisible()]
+    assert visible == ["12:00:01  Bastien › quelle heure ?", "12:00:03  Seldon › Il est midi."]
+    r.set_min_level(0)
+
+
 def test_journal_decodes_utf8_split_across_reads(window):
     r = window.runner
     r.clear()

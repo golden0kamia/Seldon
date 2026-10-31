@@ -110,3 +110,10 @@ def strip_thinking(text: str) -> str:
     if "</think>" in text and "<think>" not in text:   # balise ouvrante dans le prompt (gabarit)
         text = text.rsplit("</think>", 1)[1]
     return _THINK.sub("", text).strip()
+
+
+def thinking_in(text: str) -> str:
+    """Raisonnement ``<think>…</think>`` contenu dans une réponse (vide s'il n'y en a pas)."""
+    if "</think>" in text and "<think>" not in text:
+        return text.rsplit("</think>", 1)[0].strip()
+    return "\n".join(m.group()[len("<think>"):].removesuffix("</think>").strip() for m in _THINK.finditer(text)).strip()

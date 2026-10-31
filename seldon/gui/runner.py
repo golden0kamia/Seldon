@@ -4,19 +4,20 @@ from __future__ import annotations
 
 import codecs
 import os
+import re
 import secrets
 import signal
 import sys
 from pathlib import Path
 
 from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPalette, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QColor, QFont, QPalette, QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import (
     QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSizePolicy, QVBoxLayout,
     QWidget,
 )
 
-from seldon.core import tags
+from seldon.core import journal, tags
 from seldon.gui import theme
 
 MAX_LINES = 5000   # au-delà, les plus anciennes lignes sont oubliées
@@ -30,9 +31,15 @@ MUTE_SIGNALS = {True: getattr(signal, "SIGUSR1", None), False: getattr(signal, "
 # commandes du terminal…), comme Ctrl+C au terminal, et rien ne reste orphelin à la fermeture.
 NEW_SESSION = os.name == "posix" and hasattr(QProcess, "setUnixProcessParameters")
 
-# niveaux des lignes (logging) ; les lignes de l'interface elles-mêmes restent toujours visibles
-DEBUG, INFO, WARNING, ERROR, ALWAYS = 10, 20, 30, 40, 100
-LEVELS = [("Tout", 0), ("Sans DEBUG", INFO), ("Avertissements", WARNING), ("Erreurs", ERROR)]
+# niveaux des lignes (logging) ; les lignes de l'interface elles-mêmes restent toujours visibles.
+# CONVERSATION : ce qui est entendu et ce que Seldon dit, au-dessus des autres INFO.
+DEBUG, INFO, CONVERSATION, WARNING, ERROR, ALWAYS = 10, 20, 25, 30, 40, 100
+LEVELS = [("Tout", 0), ("Sans DEBUG", INFO), ("Conversation", CONVERSATION), ("Avertissements", WARNING),
+          ("Erreurs", ERROR)]
+
+# lignes du journal de Seldon (seldon.core.journal), affichées sans date ni nom de logger
+_JOURNAL_LINE = re.compile(r"\d{4}-\d\d-\d\d (\d\d:\d\d:\d\d)[,.]\d+ INFO (%s): (.*)"
+                           % "|".join(re.escape(n) for n in (journal.HEARD, journal.SAID, journal.THOUGHT)))
 
 
 def line_level(line: str) -> int | None:
@@ -58,6 +65,16 @@ def line_color(line: str) -> str | None:
     return level_color(line_level(line))
 
 
+def journal_line(line: str) -> tuple[str, int, str, str] | None:
+    """Ligne de conversation ou de réflexion : (texte affiché, niveau, couleur, style), sinon ``None``."""
+    if not (m := _JOURNAL_LINE.fullmatch(line)):
+        return None
+    time, name, message = m.groups()
+    if name == journal.THOUGHT:
+        return f"{time}  ⋯ {message}", INFO, theme.CRT_DIM, "italic"
+    return f"{time}  {message}", CONVERSATION, theme.ACCENT_HI if name == journal.SAID else theme.CRT_FG, "bold"
+
+
 class RunnerPanel(QWidget):
     """Démarre / arrête Seldon dans un sous-processus ; stdout et stderr sont fusionnés dans le journal."""
 
@@ -80,8 +97,8 @@ class RunnerPanel(QWidget):
         self._group = False    # le processus a sa propre session (groupe = pid)
         self._partial = ""
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
-        self._last: tuple[int, str | None] = (INFO, None)   # niveau et couleur de la ligne précédente
-        self._buffer: list[tuple[str, str | None, int]] = []
+        self._last: tuple[int, str | None, str] = (INFO, None, "")   # niveau, couleur et style de la ligne précédente
+        self._buffer: list[tuple[str, str | None, int, str]] = []
         self._flush_timer = QTimer(self, singleShot=True, interval=FLUSH_MS)
         self._flush_timer.timeout.connect(self._flush)
         self.process = QProcess(self)
@@ -198,7 +215,7 @@ class RunnerPanel(QWidget):
         args = self.arguments(text)
         self._partial = ""
         self._decoder.reset()
-        self._last = (INFO, None)
+        self._last = (INFO, None, "")
         self._note(f"$ {Path(sys.executable).name} {' '.join(args)}")
         self._token = secrets.token_hex(16)
         env = self.process.processEnvironment()
@@ -324,23 +341,27 @@ class RunnerPanel(QWidget):
             self._update()
         for raw in lines:
             line = next((s for s in reversed(raw.split("\r")) if s), "") if "\r" in raw else raw
-            level = line_level(line)
+            level, font = line_level(line), ""
             if level is None and line[:1].isspace() and line.strip():
-                level, color = self._last   # suite indentée (trace, « → piste ») : même niveau, même couleur
+                level, color, font = self._last   # suite indentée (trace, « → piste ») : même niveau, même couleur
+                if font:   # suite d'une ligne du journal : alignée sous son texte, après l'heure
+                    line = " " * 8 + line
+            elif found := journal_line(line):
+                line, level, color, font = found
             else:
                 level = level or INFO
                 color = level_color(level)
-            self._last = (level, color)
+            self._last = (level, color, font)
             # balises avec le jeton de ce lancement seulement : une sortie qui les imite est un simple texte
             confirm, mic = tags.tag(tags.CONFIRM, self._token), tags.tag(tags.MIC, self._token)
             if line.startswith(confirm):   # en début de ligne seulement : pas une citation dans un log
                 self._ask(line[len(confirm):].removesuffix("[o/N]").strip())
-                color, level = theme.AMBER, ALWAYS
+                color, level, font = theme.AMBER, ALWAYS, ""
                 line = CONFIRM_TAG + line[len(confirm):]   # le jeton n'est pas affiché
             if (at := line.find(mic)) >= 0:   # état réel du micro, au cas où un signal serait perdu
                 self._set_muted(line[at + len(mic):].strip().startswith("coupé"))
                 line = line.replace(mic, MIC_TAG)
-            self._push(line, color, level)
+            self._push(line, color, level, font)
 
     def _ask(self, question: str) -> None:
         self.pending = True
@@ -387,9 +408,9 @@ class RunnerPanel(QWidget):
             self._update()
 
     # --- affichage ----------------------------------------------------------
-    def _push(self, line: str, color: str | None = None, level: int = INFO) -> None:
-        """Ajoute une ligne au prochain paquet affiché."""
-        self._buffer.append((line, color, level))
+    def _push(self, line: str, color: str | None = None, level: int = INFO, font: str = "") -> None:
+        """Ajoute une ligne au prochain paquet affiché ; ``font`` : "", "bold" ou "italic"."""
+        self._buffer.append((line, color, level, font))
         if not self._flush_timer.isActive():
             self._flush_timer.start()
 
@@ -405,12 +426,15 @@ class RunnerPanel(QWidget):
         cursor = QTextCursor(doc)
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.beginEditBlock()
-        for text, color, level in lines:
+        for text, color, level, font in lines:
             if not doc.isEmpty() or cursor.block().userState() >= 0:
                 cursor.insertBlock()
             fmt = QTextCharFormat()
             if color:
                 fmt.setForeground(QColor(color))
+            if font == "bold":
+                fmt.setFontWeight(QFont.Weight.Bold)
+            fmt.setFontItalic(font == "italic")
             cursor.insertText(text, fmt)
             block = cursor.block()
             block.setUserState(level)

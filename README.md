@@ -52,6 +52,14 @@ commande en échec, service indisponible, ou action échouée dont le cerveau
 n'a pas parlé (« Désolé, l'action terminal a échoué. »). Le détail reste
 dans le journal.
 
+Le journal sépare trois choses (`seldon/core/journal.py`) : la conversation
+(« Bastien › … » et « Seldon › … », journalisée quel que soit `log_level`),
+les réflexions du modèle au niveau INFO (raisonnement `<think>` ou
+`reasoning_content` des modèles locaux, résumé de la réflexion pour le
+cerveau `claude`, texte écrit à côté des appels d'outils) et les actions au
+niveau DEBUG (outil, paramètres, résultat, tronqués à 300 caractères). En mode
+texte, la réponse de Seldon s'affiche ainsi dans le journal, une seule fois.
+
 Seldon commence à parler avant que le modèle ait fini d'écrire : avec le
 cerveau `llamacpp`, la réponse est lue en flux (`stream: true`) et chaque phrase
 est dite dès qu'elle est complète ; une coupure de parole arrête aussi la
@@ -210,8 +218,13 @@ Trois pages, choisies en haut de la fenêtre :
   Le programme principal
   tourne dans un sous-processus et ses logs s'affichent en direct
   (avertissements en ambre, erreurs en rouge), filtrables par niveau (Tout,
-  Sans DEBUG, Avertissements, Erreurs) ; en mode texte, le champ sous le
-  journal envoie les messages à Seldon. Quand une action demande une
+  Sans DEBUG, Conversation, Avertissements, Erreurs) ; en mode texte, le champ
+  sous le journal envoie les messages à Seldon. La conversation ressort en gras,
+  horodatée : « Bastien › … » pour ce qui est entendu, « Seldon › … » en vert
+  pour tout ce que Seldon dit (réponses, accusés de réception, annonces). Les
+  réflexions du modèle (raisonnement, texte écrit entre deux outils) suivent en
+  italique atténué, au niveau INFO ; les appels d'outils et leurs résultats
+  (tronqués) sont au niveau DEBUG. Quand une action demande une
   confirmation (`confirm: console`), le Journal s'affiche et la question
   apparaît dans un bandeau ambre dont les boutons **Oui** / **Non** (ou « o » /
   « n » dans le champ) y répondent, en mode vocal comme en mode texte. Seules

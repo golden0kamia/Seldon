@@ -24,6 +24,7 @@ from typing import Any
 from seldon.brain import history
 from seldon.brain.base import ActionExecutor, Brain, ends_turn
 from seldon.brain.prompts import STEP_LIMIT_REPLY, SYSTEM_PROMPT, user_message
+from seldon.core import journal
 from seldon.core.action import Action
 from seldon.core.errors import SeldonError
 from seldon.core.registry import register
@@ -142,7 +143,7 @@ class ClaudeBrain(Brain):
             system=self.system,
             tools=tools,
             messages=self.messages,
-            thinking={"type": "adaptive"},
+            thinking={"type": "adaptive", "display": "summarized"},   # résumé lisible, pour le journal
             output_config={"effort": self.effort},
             cache_control={"type": "ephemeral"},
         )
@@ -188,6 +189,11 @@ class ClaudeBrain(Brain):
 
                 text = "".join(b.text for b in response.content if b.type == "text").strip()
                 calls = [b for b in response.content if b.type == "tool_use"]
+                for block in response.content:
+                    if block.type == "thinking":
+                        journal.thought(block.thinking)
+                if calls:
+                    journal.thought(text)   # texte écrit avec les appels d'outils : jamais prononcé
                 if calls and response.stop_reason != "tool_use":
                     # Réponse coupée (max_tokens, refus) : un tool_use sans résultat rendrait
                     # l'historique invalide pour toutes les requêtes suivantes.

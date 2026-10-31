@@ -38,6 +38,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
+from seldon.core import journal
 from seldon.core.action import Action
 from seldon.core.registry import register
 from seldon.core.types import ActionContext, ActionResult
@@ -217,6 +218,7 @@ class ClaudeCode(Action):
             # Verrou du pipeline s'il est publié (services["busy"]) : l'annonce ne coupe pas un échange
             # en cours, et l'écoute n'est pas rétablie pendant qu'il parle.
             async with ctx.services.get("busy") or nullcontext():
+                journal.said(message[: self.announce_chars])
                 if stt is not None:
                     stt.pause()
                 try:

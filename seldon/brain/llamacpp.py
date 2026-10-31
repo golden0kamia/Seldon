@@ -37,9 +37,11 @@ from seldon.brain import history
 from seldon.brain.base import ActionExecutor, Brain, ends_turn
 from seldon.core.action import Action
 from seldon.brain.prompts import (
-    LOCAL_RULES, STEP_LIMIT_REPLY, SYSTEM_PROMPT, bad_arguments, strip_thinking, tool_arguments, user_message,
+    LOCAL_RULES, STEP_LIMIT_REPLY, SYSTEM_PROMPT, bad_arguments, strip_thinking, thinking_in, tool_arguments,
+    user_message,
 )
 from seldon.brain.speech import SpeechStream
+from seldon.core import journal
 from seldon.core.errors import SeldonError, redact
 from seldon.core.registry import register
 from seldon.core.types import ActionResult, Utterance
@@ -251,6 +253,7 @@ class LlamaCppBrain(Brain):
     async def _stream(self, body: dict[str, Any], speech: SpeechStream) -> dict[str, Any]:
         """Lit la réponse en flux (SSE) ; les phrases du premier appel ``speak`` sont dites au fil de l'eau."""
         content: list[str] = []
+        reasoning: list[str] = []
         calls: dict[int, dict[str, Any]] = {}
         async with self.client.stream("POST", "/chat/completions", json={**body, "stream": True}) as response:
             if response.is_error:
@@ -277,6 +280,8 @@ class LlamaCppBrain(Brain):
                     delta = choice.get("delta") or {}
                     if delta.get("content"):
                         content.append(delta["content"])
+                    if part := delta.get("reasoning_content") or delta.get("reasoning"):
+                        reasoning.append(part)
                     for tc in delta.get("tool_calls") or []:
                         call = calls.setdefault(tc.get("index", 0), {
                             "id": "", "type": "function", "function": {"name": "", "arguments": ""}})
@@ -289,7 +294,8 @@ class LlamaCppBrain(Brain):
                     speech.feed(first["function"]["arguments"])
                     if speech.stopped:
                         break   # coupé : inutile de laisser le modèle finir (la connexion fermée l'arrête)
-        return {"role": "assistant", "content": "".join(content), "tool_calls": [calls[i] for i in sorted(calls)]}
+        return {"role": "assistant", "content": "".join(content), "reasoning_content": "".join(reasoning),
+                "tool_calls": [calls[i] for i in sorted(calls)]}
 
     async def _chat(self, tools: list[dict[str, Any]], messages: list[dict[str, Any]] | None = None,
                     speech: SpeechStream | None = None) -> dict[str, Any]:
@@ -342,7 +348,11 @@ class LlamaCppBrain(Brain):
                 calls = [c for c in msg.get("tool_calls") or [] if isinstance(c, dict)]
                 if speech is not None and speech.stopped:
                     calls = calls[:1]   # interrompu pendant la génération : les appels suivants sont incomplets
-                content = strip_thinking(msg.get("content") or "")
+                raw = msg.get("content") or ""
+                content = strip_thinking(raw)
+                journal.thought(msg.get("reasoning_content") or msg.get("reasoning") or thinking_in(raw))
+                if calls:
+                    journal.thought(content)   # texte écrit avec les appels d'outils : jamais prononcé
                 self.messages.append({"role": "assistant", "content": content, **({"tool_calls": calls} if calls else {})})
                 if not calls:
                     return content or None

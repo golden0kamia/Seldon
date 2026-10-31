@@ -21,8 +21,10 @@ from seldon.brain import history
 from seldon.brain.base import ActionExecutor, Brain, ends_turn
 from seldon.core.action import Action
 from seldon.brain.prompts import (
-    LOCAL_RULES, STEP_LIMIT_REPLY, SYSTEM_PROMPT, bad_arguments, strip_thinking, tool_arguments, user_message,
+    LOCAL_RULES, STEP_LIMIT_REPLY, SYSTEM_PROMPT, bad_arguments, strip_thinking, thinking_in, tool_arguments,
+    user_message,
 )
+from seldon.core import journal
 from seldon.core.errors import SeldonError
 from seldon.core.registry import register
 from seldon.core.types import ActionResult, Utterance
@@ -141,6 +143,9 @@ class OllamaBrain(Brain):
                 msg = response.message
                 calls = list(msg.tool_calls or [])
                 content = strip_thinking(msg.content or "")
+                journal.thought(getattr(msg, "thinking", None) or thinking_in(msg.content or ""))
+                if calls:
+                    journal.thought(content)   # texte écrit avec les appels d'outils : jamais prononcé
                 self.messages.append({
                     "role": "assistant",
                     "content": content,

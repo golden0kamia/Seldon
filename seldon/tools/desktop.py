@@ -68,6 +68,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 from urllib.parse import urlsplit
 
+from seldon.core import journal
 from seldon.core.action import Action
 from seldon.core.registry import register
 from seldon.core.types import ActionContext, ActionResult, Image
@@ -605,6 +606,7 @@ class Desktop(Action):
             events = services.get("events")
             if events is not None:
                 await events.emit("desktop.notifications", notifications=batch, text=message)
+            journal.said(message)
             if stt is not None:
                 stt.pause()
             try:

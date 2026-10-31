@@ -28,7 +28,7 @@ from seldon.brain.base import Brain
 from seldon.brain.fallback import FallbackBrain
 from seldon.brain.prompts import neutralize
 from seldon.config import Config
-from seldon.core import commands, registry, tags
+from seldon.core import commands, journal, registry, tags
 from seldon.core.action import Action
 from seldon.core.errors import SeldonError, describe, log_error, spoken
 from seldon.core.events import EventBus
@@ -297,6 +297,7 @@ class Assistant:
 
     async def _say(self, text: str) -> None:
         """Dit ``text`` sans s'entendre soi-même (écoute en pause)."""
+        journal.said(text)
         self.stt.pause()
         try:
             await self.tts.speak(text)
@@ -328,6 +329,7 @@ class Assistant:
         utterance.text = neutralize(utterance.text)
         if self.enable_commands and (found := commands.match(utterance.text, utterance.typed)):
             cmd, args = found
+            journal.heard(utterance.speaker, utterance.text)
             await self.events.emit("command", name=cmd.aliases[0], args=args)
             reply = await cmd.handler(self, args)
             if reply:
@@ -335,7 +337,7 @@ class Assistant:
             return
         utterance = await self._identify(utterance)
         self._context_notes(utterance)
-        log.info("[%s] %s", utterance.speaker or "inconnu", utterance.text)
+        journal.heard(utterance.speaker, utterance.text)
         await self.events.emit("utterance", utterance=utterance)
         memory = self.memory
         if memory:
@@ -371,13 +373,19 @@ class Assistant:
                 # Une fois par tour, sauf si le cerveau a déjà parlé : dit en parallèle de l'action.
                 ack = asyncio.create_task(self._say_ack(text))
             await self.events.emit("action.start", name=name, params=params)
+            if name == "speak":
+                journal.said(str(params.get("text", "")))
+            else:
+                journal.action(name, params)
             try:
                 result = await action.run(params, ctx)
             except Exception as e:
                 log_error(log, f"Action {name} échouée", e)
                 result = ActionResult.error(describe(e))
-            if result.is_error and name != "speak":
-                failed.append((name, result.text))
+            if name != "speak":
+                journal.action_result(name, result.is_error, result.text)
+                if result.is_error:
+                    failed.append((name, result.text))
             if name == "speak" and not result.is_error:
                 spoke = True
                 if memory:

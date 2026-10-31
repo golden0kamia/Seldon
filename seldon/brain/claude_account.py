@@ -28,6 +28,7 @@ from typing import Any
 
 from seldon.brain.base import ActionExecutor, ends_turn
 from seldon.brain.prompts import STEP_LIMIT_REPLY, user_message
+from seldon.core import journal
 from seldon.core.action import Action
 from seldon.core.errors import SeldonError
 from seldon.core.types import ActionResult, Utterance
@@ -209,7 +210,7 @@ class AccountSession:
         return out
 
     async def handle(self, utterance: Utterance, actions: list[Action], execute: ActionExecutor) -> str | None:
-        from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
+        from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ThinkingBlock
 
         await self.connect(actions)
         messages = self.brain.messages
@@ -223,6 +224,9 @@ class AccountSession:
             await self.client.query(prompt)
             async for msg in self.client.receive_response():
                 if isinstance(msg, AssistantMessage):
+                    for block in msg.content:
+                        if isinstance(block, ThinkingBlock):
+                            journal.thought(block.thinking)
                     text = "".join(b.text for b in msg.content if isinstance(b, TextBlock)).strip() or text
                 elif isinstance(msg, ResultMessage):
                     result = msg

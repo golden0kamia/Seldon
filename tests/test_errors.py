@@ -45,8 +45,8 @@ def test_unknown_engine_suggests_close_name():
 
 def test_unknown_option_suggests_close_name():
     with pytest.raises(SeldonError) as e:
-        registry.create("tts", "console", prefx="> ")
-    assert "prefx" in str(e.value) and "prefix" in str(e.value)
+        registry.create("tts", "pyttsx3", voic="fr")
+    assert "voic" in str(e.value) and "« voice »" in str(e.value)
 
 
 def test_missing_dependency_names_extra():

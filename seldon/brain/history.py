@@ -164,6 +164,6 @@ def compact(messages: list[dict[str, Any]], fmt: Any, max_chars: int, max_messag
     if cut:
         del messages[:cut]
         fmt.after_cut(messages[0])
-    log.info("Historique allégé : %d → %d messages, %d → %d caractères",
-             before[0], len(messages), before[1], size(messages))
+    log.debug("Historique allégé : %d → %d messages, %d → %d caractères",
+              before[0], len(messages), before[1], size(messages))
     return True
