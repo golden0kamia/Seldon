@@ -54,15 +54,15 @@ BLOCKS = [
     Block("events", "Bus d'événements", 3, 0, "utterance, command, action.start/end, response, error… "
           "pour brancher des extensions sans toucher au pipeline.", "core/events.py"),
     Block("mic", "Micro · clavier", 0, 1, "Son capté au micro, ou lignes tapées (--text, Journal)."),
-    Block("stt", "Reconnaissance vocale", 1, 1, "Transcrit la parole, repère le mot d'éveil "
-          "et produit des Utterance.", "stt/base.py", "stt"),
+    Block("stt", "Reconnaissance vocale", 1, 1, "Transcrit la parole et produit "
+          "des Utterance.", "stt/base.py", "stt"),
     Block("pipeline", "Pipeline", 2, 1, "L'Assistant : orchestre chaque prise de parole, du texte "
           "reconnu à la réponse dite.", "core/pipeline.py"),
     Block("tts", "Synthèse vocale", 3, 1, "Dit les réponses ; l'écoute est en pause pendant ce temps.",
           "tts/base.py", "tts"),
     Block("speaker_out", "Haut-parleur", 4, 1, "Sortie audio (ou console avec --text)."),
-    Block("cli", "Outils hors ligne", 0, 2, "seldon.cli : enrôlement des voix (enroll) et "
-          "variantes du mot d'éveil (wakeword), lus au démarrage.", "cli/enroll.py"),
+    Block("cli", "Outils hors ligne", 0, 2, "seldon.cli : enrôlement des voix (enroll), "
+          "lu au démarrage.", "cli/enroll.py"),
     Block("speakers", "Identification des voix", 1, 2, "Reconnaît qui parle à partir des voix "
           "enrôlées.", "speakers/base.py", "speakers"),
     Block("brain", "Cerveau", 2, 2, "Modèle de langage : reçoit la phrase et les outils, "
@@ -90,7 +90,6 @@ LINKS = [
     Link("stt", "pipeline", "Utterance"),
     Link("pipeline", "tts", "speak()"),
     Link("tts", "speaker_out", "voix"),
-    Link("cli", "stt", "mot d'éveil"),
     Link("cli", "speakers", "voix"),
     Link("pipeline", "speakers", "identify()", both=True),
     Link("pipeline", "brain", "handle() ⇄ outils", both=True),

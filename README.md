@@ -150,7 +150,6 @@ variables ne sont pas transmises aux commandes lancées par l'action terminal
 python -m seldon                    # mode vocal complet (config.yaml) ; Ctrl+C ou SIGTERM : arrêt propre
 python -m seldon --text             # clavier + console ; "Bastien: bonjour" simule un locuteur
 python -m seldon.cli.enroll Bastien   # enregistre une empreinte vocale
-python -m seldon.cli.wakeword         # entraîne le mot d'éveil sur votre voix
 python -m pytest                    # tests (sans micro, caméra ni modèle)
 ```
 
@@ -452,33 +451,11 @@ reçoit une note (« Paul te reparle après 3 jours ; votre dernier échange
 portait sur … ») : Seldon salue la personne et peut proposer de reprendre le
 sujet. Il accueille aussi une voix connue qui lui parle pour la première fois.
 
-### Attention et mots d'éveil
-
-Avec des mots d'éveil (`stt.options.wake_words`, ex. `["Seldon"]`), Seldon
-répond aux phrases qui commencent par l'un d'eux (« Seldon » seul suffit pour
-l'appeler), puis reste attentif `follow_up_s` secondes (20 par défaut) après
-chaque échange : on peut lui répondre sans le rappeler. Il ne répond alors
-que si la phrase lui est adressée. Ce qui est dit hors de ces moments n'est pas
-traité, mais les dernières phrases entendues (avec leur locuteur) sont
-transmises au cerveau la fois suivante : il sait de quoi on parlait et qui a
-dit quoi. Sans mots d'éveil, tout est transmis au cerveau, qui ignore ce qui
-ne lui est visiblement pas adressé.
-
-**Entraîner le mot d'éveil** : Whisper écrit parfois un nom propre de travers
-(« Celdon », « Sel don »…), et le mot d'éveil n'est alors pas reconnu.
-`python -m seldon.cli.wakeword` fait prononcer le mot d'éveil une dizaine de
-fois (seul ou en début de phrase), retient les transcriptions qui diffèrent,
-puis fait lire quelques phrases sans le mot d'éveil et écarte toute variante
-qui y apparaît en tête (elle réveillerait Seldon à tort). Les variantes sont
-ajoutées à `stt.options.wake_variants` (`data/wake_words.json`) et lues au
-démarrage ; `--list` les affiche, `--reset` les oublie. Si le mot est rarement
-bien transcrit, `initial_prompt: "Seldon"` aide aussi Whisper.
-
 ### Couper la parole
 
 Pendant que Seldon parle, le micro reste à l'écoute des sons plus forts que
 son propre écho (`barge_in_db`, -35 dBFS par défaut). Un mot d'interruption
-(« stop », « attends », « tais-toi », « chut »… ou un mot d'éveil, liste
+(« stop », « attends », « tais-toi », « chut »…, liste
 `interrupt_words`) le fait taire. Un mot qu'il est lui-même en train de
 prononcer est ignoré (c'est sans doute son écho). Si la phrase demande autre
 chose (« attends, plutôt demain »), elle est traitée juste après. Avec des
@@ -505,7 +482,7 @@ haut-parleurs forts, monter `barge_in_db` (ex. -25) ou mettre
 | `seldon/tools/` | Tools du cerveau (Python) | `Action.run(params, ctx) -> ActionResult` (`seldon/core/action.py`) |
 | `seldon/mcp/` | Client MCP et serveurs branchés (Home Assistant) | `MCPAction` : un outil par serveur |
 | `seldon/skills/` | Chargement des skills (`skills/<nom>/SKILL.md`) | outil `skill` |
-| `seldon/cli/` | Outils hors ligne : `enroll`, `wakeword` | `python -m seldon.cli.…` |
+| `seldon/cli/` | Outils hors ligne : `enroll` | `python -m seldon.cli.…` |
 | `seldon/tts/` | Texte → parole | `TTSEngine.speak(text)` |
 | `seldon/core/` | Pipeline, registre de plugins, bus d'événements, mémoire, écriture privée des fichiers (`storage.py`), balises lues par l'interface (`tags.py`) | |
 | `seldon/gui/` | Interface Qt 6 (paramètres, voix et conversations enregistrées, fichiers, éditeur, journal, schéma des sous-systèmes, thème) | lit les plugins par AST, sans les importer |

@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
 CONFIRM_MODES = ("console", "always", "never")
-TOP_LEVEL = ("stt", "speakers", "brain", "tts", "tools", "skills", "mcp", "actions", "memory", "commands", "confirm", "follow_up_s",
+TOP_LEVEL = ("stt", "speakers", "brain", "tts", "tools", "skills", "mcp", "actions", "memory", "commands", "confirm",
              "acknowledge", "log_level")
 
 
@@ -110,7 +110,6 @@ class Config:
     memory: dict[str, Any] = field(default_factory=dict)   # options de ConversationMemory + enabled
     commands: bool = True       # commandes locales : exit, reset, aide…
     confirm: str = "console"   # "console" (demande au clavier), "always" ou "never"
-    follow_up_s: float = 20     # avec mots d'éveil : écoute sans mot d'éveil après un échange
     acknowledge: bool = True    # annonce qu'une action demandée est comprise et en cours
     log_level: str = "INFO"
 
@@ -170,9 +169,6 @@ class Config:
         log_level = str(raw.get("log_level", "INFO")).upper()
         if log_level not in LOG_LEVELS:
             raise SeldonError(f"{source} : log_level « {log_level} » inconnu", f"valeurs possibles : {', '.join(LOG_LEVELS)}")
-        follow_up_s = raw.get("follow_up_s", 20)
-        if isinstance(follow_up_s, bool) or not isinstance(follow_up_s, (int, float)) or follow_up_s < 0:
-            raise SeldonError(f"{source} : follow_up_s doit être un nombre de secondes, pas {follow_up_s!r}")
         for key in ("commands", "acknowledge"):   # « non » ou "false" entre guillemets vaudraient vrai
             if not isinstance(raw.get(key, True), bool):
                 raise SeldonError(f"{source} : {key} doit valoir true ou false, pas {raw[key]!r}")
@@ -198,7 +194,6 @@ class Config:
             memory=dict(memory),
             commands=bool(raw.get("commands", True)),
             confirm=confirm,
-            follow_up_s=follow_up_s,
             acknowledge=bool(raw.get("acknowledge", True)),
             log_level=log_level,
         )

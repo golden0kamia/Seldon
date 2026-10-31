@@ -13,7 +13,7 @@ import pytest
 from seldon.core import registry
 from seldon.core.types import Utterance
 from seldon.speakers.resemblyzer_id import ResemblyzerID
-from seldon.stt.whisper import FRAME, SAMPLE_RATE, EnergyVAD, Segmenter, WhisperSTT, strip_wake_word
+from seldon.stt.whisper import FRAME, SAMPLE_RATE, EnergyVAD, Segmenter, WhisperSTT
 
 
 def frames(seconds: float, amplitude: float) -> list[np.ndarray]:
@@ -67,42 +67,11 @@ def test_energy_vad():
 
 # -- WhisperSTT (modèle et micro simulés) ----------------------------------------
 
-def test_wake_words():
-    assert strip_wake_word("Seldon, allume la lumière.", ["seldon"]) == "allume la lumière."
-    assert strip_wake_word("seldon", ["Seldon"]) == ""
-    assert strip_wake_word("Allume la lumière", ["Seldon"]) is None
-    assert strip_wake_word("Seldonia est loin", ["Seldon"]) is None
-    assert strip_wake_word("Sel-don, allume.", ["sel don"]) == "allume."
-
-
-def test_learned_wake_variants(tmp_path):
-    from seldon.cli.wakeword import candidate, useful
-
-    path = tmp_path / "wake_words.json"
-    path.write_text('{"Seldon": ["celdon", "sel don"], "Jarvis": ["jarvice"]}', encoding="utf-8")
-    stt = WhisperSTT(wake_words=["Seldon"], wake_variants=str(path))
-    assert stt.accept("Celdon, quelle heure est-il ?") == ("quelle heure est-il ?", True)
-    assert stt.accept("Sel don") == ("Sel don", True)
-    assert stt.accept("Jarvice, bonjour") == ("Jarvice, bonjour", False)   # autre mot d'éveil, non configuré
-    assert "celdon" in stt.interrupt_words
-    assert WhisperSTT(wake_variants=str(path)).wake_forms == []
-    path.write_text("{oups", encoding="utf-8")
-    assert WhisperSTT(wake_words=["Seldon"], wake_variants=str(path)).wake_forms == ["Seldon"]
-
-    assert candidate(["sel", "don", "quelle", "heure", "est", "il"], ["quelle", "heure", "est", "il"], 1) == ["sel", "don"]
-    assert candidate(["celdon"], [], 1) == ["celdon"]
-    assert candidate("un deux trois quatre".split(), [], 1) is None
-    assert useful("celdon") and not useful("selon") and not useful("c'est")
-
-
 def test_accept_filters():
-    stt = WhisperSTT(wake_words=["Seldon"])
+    stt = WhisperSTT()
     assert stt.accept("") is None
     assert stt.accept("Sous-titres réalisés par la communauté d'Amara.org") is None
-    assert stt.accept("Seldon") == ("Seldon", True)      # simple appel
-    assert stt.accept("Bonjour") == ("Bonjour", False)   # gardé : le pipeline décide
-    assert stt.accept("Seldon, quelle heure est-il ?") == ("quelle heure est-il ?", True)
-    assert WhisperSTT().accept("Bonjour") == ("Bonjour", None)
+    assert stt.accept("Bonjour") == "Bonjour"
 
 
 def test_transcribe_drops_no_speech():
@@ -319,7 +288,7 @@ def test_contains_phrase():
 
 
 async def test_whisper_interruption_ignores_echo_and_requeues_requests():
-    stt = WhisperSTT(wake_words=["Seldon"])
+    stt = WhisperSTT()
     stt._segments, stt._barge = asyncio.Queue(), asyncio.Queue()
     heard = iter(["Il faut s'arrêter au stop.", "euh", "Attends, plutôt demain", "Stop !"])
     stt.transcribe = lambda audio: (next(heard), "fr")
@@ -332,15 +301,15 @@ async def test_whisper_interruption_ignores_echo_and_requeues_requests():
     for _ in range(4):
         stt._barge.put_nowait(np.zeros(10, np.float32))
     u = await asyncio.wait_for(task, 2)
-    assert u.text == "Attends, plutôt demain" and u.addressed and u.notes
+    assert u.text == "Attends, plutôt demain" and u.notes
     assert stt._segments.get_nowait() is u           # demande à traiter ensuite
 
-    stt.transcribe = lambda audio: ("Seldon, stop.", "fr")
+    stt.transcribe = lambda audio: ("Stop, stop.", "fr")
     task = asyncio.create_task(stt.interruption("Bonjour"))
     await asyncio.sleep(0)
     stt._barge.put_nowait(np.zeros(10, np.float32))
     u = await asyncio.wait_for(task, 2)
-    assert u.text == "stop." and stt._segments.empty()   # simple « stop » : rien d'autre à traiter
+    assert u.text == "Stop, stop." and stt._segments.empty()   # simple « stop » : rien d'autre à traiter
 
 
 async def test_vad_thread_routes_loud_speech_to_barge_in_while_paused():

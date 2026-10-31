@@ -25,7 +25,7 @@ class ListSTT(STTEngine):
             yield u
 
 
-def assistant(tmp_path, utterances, follow_up_s=20, memory=True):
+def assistant(tmp_path, utterances, memory=True):
     brain = EchoBrain()
     mem = ConversationMemory(brain, "echo", dir=str(tmp_path)) if memory else None
     seen = []
@@ -37,7 +37,7 @@ def assistant(tmp_path, utterances, follow_up_s=20, memory=True):
 
     brain.handle = handle
     tts = RecordingTTS()
-    a = Assistant(ListSTT(utterances), NoSpeakerId(), brain, tts, [Speak()], memory=mem, follow_up_s=follow_up_s)
+    a = Assistant(ListSTT(utterances), NoSpeakerId(), brain, tts, [Speak()], memory=mem)
     return a, seen, tts, mem
 
 
@@ -69,31 +69,6 @@ async def test_absence_note(tmp_path):
 def test_user_message_includes_notes():
     msg = user_message(Utterance("salut", speaker="Paul", notes=["une note"]))
     assert msg.splitlines()[1:] == ["[note : une note]", "salut"] and "locuteur : Paul" in msg
-
-
-# -- attention (mots d'éveil) -----------------------------------------------------------
-
-async def test_follow_up_window_and_overheard(tmp_path):
-    now = time.time()
-    a, seen, tts, _ = assistant(tmp_path, [
-        Utterance("on mange quoi ?", speaker="Paul", addressed=False, timestamp=now),   # ignoré, retenu
-        Utterance("des pâtes", speaker="Bastien", addressed=False, timestamp=now),
-        Utterance("quelle heure est-il ?", speaker="Bastien", addressed=True),
-        Utterance("et demain ?", speaker="Bastien", addressed=False),     # dans la foulée
-    ], memory=False)
-    await a.run()
-    assert [u.text for u in seen] == ["quelle heure est-il ?", "et demain ?"]
-    assert "Paul : « on mange quoi ? » ; Bastien : « des pâtes »" in seen[0].notes[0]
-    assert "sans mot d'éveil" in seen[1].notes[0] and len(seen[1].notes) == 1
-    assert len(tts.said) == 2
-
-
-async def test_without_follow_up_unaddressed_is_ignored(tmp_path):
-    a, seen, _, _ = assistant(tmp_path, [
-        Utterance("Seldon", addressed=True), Utterance("et demain ?", addressed=False),
-    ], follow_up_s=0, memory=False)
-    await a.run()
-    assert [u.text for u in seen] == ["Seldon"]
 
 
 # -- coupure de parole ------------------------------------------------------------------

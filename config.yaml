@@ -15,7 +15,6 @@ memory:                   # mémoire des conversations (reprise à tout moment, 
 
 commands: true            # commandes locales : exit, reset, actions, aide (taper /aide)
 confirm: console          # validation des actions sensibles : console | always | never
-follow_up_s: 20           # avec mots d'éveil : reste attentif 20 s après chaque échange
 acknowledge: true         # annonce qu'une action est lancée (phrase variée, selon la demande)
 
 stt:
@@ -27,8 +26,6 @@ stt:
     compute_type: int8
     vad: silero
     silence_ms: 700       # silence qui termine une phrase
-    wake_words: ["Seldon"]   # ne réagit qu'à l'appel (puis follow_up_s) ; null = écoute tout
-    wake_variants: data/wake_words.json   # entraîner : python -m seldon.cli.wakeword
     barge_in: true        # on peut couper la parole à Seldon (« stop », « attends »…)
     barge_in_db: -35      # niveau minimal d'une interruption ; monter si l'écho des HP le déclenche
 

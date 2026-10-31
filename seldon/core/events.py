@@ -2,7 +2,6 @@
 
 Événements émis par le pipeline :
     utterance        (utterance: Utterance)
-    overheard        (utterance: Utterance)       phrase entendue sans mot d'éveil, non traitée
     command          (name: str, args: str)
     acknowledge      (text: str)
     action.start     (name: str, params: dict)    params peut contenir des données sensibles

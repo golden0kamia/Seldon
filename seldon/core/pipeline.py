@@ -5,12 +5,6 @@ Seldon (``conversations`` de la mémoire, ``voix`` de l'identification des
 locuteurs), les serveurs MCP et, s'il y a des skills, l'outil ``skill`` qui en
 donne les consignes (voir ``seldon.skills``).
 
-Attention : si l'STT utilise des mots d'éveil, Seldon répond aux phrases qui en
-commencent par un, puis reste attentif ``follow_up_s`` secondes après chaque
-échange (on peut lui répondre sans le rappeler). Ce qui est dit hors de ces
-moments n'est pas traité, mais les dernières phrases (avec leur locuteur) sont
-transmises au cerveau la fois suivante, pour qu'il sache de quoi on parlait.
-
 Avec la mémoire, une tâche de fond vérifie toutes les ``compress_every_s``
 secondes la taille des conversations et résume les plus volumineuses ; elle ne
 travaille jamais pendant le traitement d'une prise de parole (verrou ``_busy``).
@@ -28,7 +22,6 @@ import asyncio
 import logging
 import signal
 import time
-from collections import deque
 from typing import Any
 
 from seldon.brain.base import Brain
@@ -48,9 +41,6 @@ from seldon.stt.text import read_line
 from seldon.tts.base import TTSEngine
 
 log = logging.getLogger(__name__)
-
-OVERHEARD_S = 120     # ancienneté maximale des phrases entendues transmises au cerveau
-OVERHEARD_MAX = 6
 
 
 # signal -> micro coupé ? (POSIX seulement)
@@ -99,7 +89,6 @@ class Assistant:
         events: EventBus | None = None,
         enable_commands: bool = True,
         memory: ConversationMemory | None = None,
-        follow_up_s: float = 20,
         acknowledge: bool = True,
     ) -> None:
         self.stt = stt
@@ -114,10 +103,7 @@ class Assistant:
         self._terminating = False
         self._task: asyncio.Task | None = None   # tâche de run(), annulée par SIGTERM
         self.memory = memory
-        self.follow_up_s = follow_up_s
         self.acknowledge = acknowledge
-        self._attentive_until = 0.0
-        self._overheard: deque[Utterance] = deque(maxlen=OVERHEARD_MAX)
         self._busy = asyncio.Lock()   # pris pendant un tour, et par la compression des conversations
         # Services accessibles aux actions via ctx.services ; on peut en ajouter.
         self.services: dict[str, Any] = {
@@ -166,7 +152,6 @@ class Assistant:
             confirm=CONFIRMERS[cfg.confirm],
             enable_commands=cfg.commands,
             memory=memory,
-            follow_up_s=cfg.follow_up_s,
             acknowledge=cfg.acknowledge,
         )
 
@@ -294,10 +279,6 @@ class Assistant:
         """Demande l'arrêt après la prise de parole en cours."""
         self._stop_requested = True
 
-    def _attend(self) -> None:
-        """Reste attentif quelques secondes (sans mot d'éveil) après un échange."""
-        self._attentive_until = time.time() + self.follow_up_s
-
     async def _identify(self, utterance: Utterance) -> Utterance:
         try:
             return await self.speakers.identify(utterance)
@@ -307,16 +288,7 @@ class Assistant:
             return utterance
 
     def _context_notes(self, utterance: Utterance) -> None:
-        """Ajoute à ``utterance`` le contexte utile au cerveau (phrases entendues, absence)."""
-        if utterance.addressed is False:
-            utterance.notes.append(
-                "dit sans mot d'éveil, juste après votre échange : réponds seulement si cela t'est adressé."
-            )
-        recent = [u for u in self._overheard if utterance.timestamp - u.timestamp <= OVERHEARD_S]
-        self._overheard.clear()
-        if recent:
-            said = " ; ".join(f"{u.speaker or 'inconnu'} : « {u.text} »" for u in recent)
-            utterance.notes.append(f"entendu juste avant, sans t'être adressé : {said}")
+        """Ajoute à ``utterance`` le contexte utile au cerveau (absence)."""
         try:
             if self.memory and (note := self.memory.absence_note(utterance.speaker, utterance.timestamp)):
                 utterance.notes.append(note)
@@ -324,13 +296,12 @@ class Assistant:
             log_error(log, "Dernière visite du locuteur introuvable", e)
 
     async def _say(self, text: str) -> None:
-        """Dit ``text`` sans s'entendre soi-même (écoute en pause), puis reste attentif."""
+        """Dit ``text`` sans s'entendre soi-même (écoute en pause)."""
         self.stt.pause()
         try:
             await self.tts.speak(text)
         finally:
             self.stt.resume()
-        self._attend()
 
     async def _say_ack(self, text: str) -> None:
         """Accusé de réception, dit pendant que l'action s'exécute (hors mémoire)."""
@@ -355,14 +326,6 @@ class Assistant:
         # Seul Seldon écrit des crochets dans les messages du cerveau (en-tête, [note : …]) :
         # une phrase (ou un texte tapé) ne peut pas s'en faire passer pour une.
         utterance.text = neutralize(utterance.text)
-        if utterance.addressed is False and time.time() > self._attentive_until:
-            utterance = await self._identify(utterance)
-            log.debug("[%s] (non adressé) %s", utterance.speaker or "inconnu", utterance.text)
-            self._overheard.append(utterance)
-            await self.events.emit("overheard", utterance=utterance)
-            return
-        if utterance.addressed:
-            self._attend()
         if self.enable_commands and (found := commands.match(utterance.text, utterance.typed)):
             cmd, args = found
             await self.events.emit("command", name=cmd.aliases[0], args=args)
@@ -417,7 +380,6 @@ class Assistant:
                 failed.append((name, result.text))
             if name == "speak" and not result.is_error:
                 spoke = True
-                self._attend()
                 if memory:
                     memory.record("assistant", params.get("text", ""))
             await self.events.emit("action.end", name=name, result=result)

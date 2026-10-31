@@ -29,8 +29,6 @@ def test_yaml_syntax_error_gives_line():
     ("actions: speak", "liste"),
     ("confirm: peut-être", "console, always, never"),
     ("log_level: bavard", "DEBUG"),
-    ("follow_up_s: longtemps", "follow_up_s"),
-    ("follow_up_s: -5", "follow_up_s"),
     ("commands: 'false'", "true ou false"),
     ("acknowledge: non", "true ou false"),
 ])
@@ -92,8 +90,8 @@ async def test_start_failure_names_the_stage():
 
 def test_unknown_top_level_key_is_reported(caplog):
     caplog.set_level(logging.WARNING)
-    Config.parse("stt: text\nfolow_up_s: 5\n")
-    assert "folow_up_s" in caplog.text and "follow_up_s" in caplog.text
+    Config.parse("stt: text\nacknowlege: false\n")
+    assert "acknowlege" in caplog.text and "acknowledge" in caplog.text
 
 
 @pytest.mark.parametrize("options, match", [
