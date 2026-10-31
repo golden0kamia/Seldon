@@ -565,6 +565,31 @@ def test_conversation_records_are_cached_and_robust(tmp_path, qapp):
     assert opened == [(tmp_path / "c2.json").resolve()]       # l'id vient du nom du fichier, pas du JSON
 
 
+def test_conversation_delete_asks_confirmation(tmp_path, qapp, monkeypatch):
+    import json
+
+    from PySide6.QtWidgets import QMessageBox
+
+    from seldon.gui import records
+
+    for name in ("a", "b"):
+        (tmp_path / f"{name}.json").write_text(json.dumps(dict(created=0, updated=0, brain="x", title=name)),
+                                               encoding="utf-8")
+    view = records.ConversationsView(lambda: tmp_path)
+    assert view.list.count() == 2 and view.delete_btn.isEnabled()
+    key = view.selected()
+    answers = [QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes]
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: answers.pop(0))
+    view.delete_btn.click()                                    # refusée : rien n'est supprimé
+    assert (tmp_path / f"{key}.json").exists() and view.list.count() == 2
+    view.delete_btn.click()
+    assert not (tmp_path / f"{key}.json").exists() and view.list.count() == 1
+    view.list.setCurrentRow(0)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    view.delete_btn.click()
+    assert view.list.count() == 0 and not view.delete_btn.isEnabled()
+
+
 def test_journal_lines_levels_progress_and_confirmation(window):
     from seldon.gui import runner as rmod
 

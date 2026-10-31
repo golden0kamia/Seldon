@@ -15,8 +15,8 @@ from typing import Callable
 
 from PySide6.QtCore import QFileSystemWatcher, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton, QScrollArea, QSizePolicy,
-    QToolButton, QVBoxLayout, QWidget,
+    QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea,
+    QSizePolicy, QToolButton, QVBoxLayout, QWidget,
 )
 
 from seldon.core.memory import Conversation, load_conversations
@@ -290,6 +290,10 @@ class ConversationsView(RecordsView):
         self.open_btn.setToolTip("Ouvrir le JSON de la conversation dans l'éditeur")
         self.open_btn.clicked.connect(self._open)
         self.tools.addWidget(self.open_btn)
+        self.delete_btn = QPushButton("Supprimer")
+        self.delete_btn.setToolTip("Supprimer définitivement la conversation (après confirmation)")
+        self.delete_btn.clicked.connect(self._delete)
+        self.tools.addWidget(self.delete_btn)
         self.show_detail()
 
     def load(self, folder: Path) -> list[tuple[str, str, str]]:
@@ -325,14 +329,34 @@ class ConversationsView(RecordsView):
 
     def update_tools(self) -> None:
         on = self.selected() is not None
-        for b in [*self.modes, getattr(self, "open_btn", None)]:
+        for b in [*self.modes, getattr(self, "open_btn", None), getattr(self, "delete_btn", None)]:
             if b is not None:
                 b.setEnabled(on)
 
-    def _open(self) -> None:
+    def _file(self) -> Path | None:
+        """Fichier JSON de la conversation sélectionnée ; None s'il n'y en a pas."""
         if (key := self.selected()) is None or self.current_dir is None:
-            return
-        # l'identifiant vient du contenu du fichier : « ../ » ne doit pas mener hors du dossier
+            return None
+        # l'identifiant est le nom du fichier : « ../ » ou un lien ne doivent pas mener hors du dossier
         path = (self.current_dir / f"{key}.json").resolve()
-        if path.parent == self.current_dir and path.is_file():
+        return path if path.parent == self.current_dir and path.is_file() else None
+
+    def _open(self) -> None:
+        if (path := self._file()) is not None:
             self.open_requested.emit(path)
+
+    def _delete(self) -> None:
+        if (path := self._file()) is None:
+            return
+        title = str(self.convs[self.selected()].title or "sans titre")
+        answer = QMessageBox.question(
+            self, "Supprimer la conversation",
+            f"Supprimer définitivement « {title} » ?\n\n{_home(path, self.base)}",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as e:
+            QMessageBox.warning(self, "Suppression impossible", f"{path.name} : {e}")
+        self.refresh()

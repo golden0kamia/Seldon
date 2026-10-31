@@ -188,7 +188,8 @@ Trois pages, choisies en haut de la fenêtre :
   d'échantillons, conversations où chacun a parlé) ; la page **Mémoire** liste
   les conversations sauvegardées avec, pour chacune, un **résumé** (période,
   participants, thèmes, demandes, dernière réponse — calculé localement, sans
-  le cerveau) ou la **transcription** complète. Les deux listes suivent leur
+  le cerveau) ou la **transcription** complète, et un bouton **Supprimer**
+  (après confirmation). Les deux listes suivent leur
   dossier (`voices_dir`, `memory.dir`) et se mettent à jour d'elles-mêmes.
   Sur les pages **Tools** et **MCP**, le bouton ✎ de chaque entrée ouvre son
   code dans l'Éditeur, comme celui des **Skills** ouvre leur `SKILL.md`. Une
