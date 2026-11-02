@@ -17,18 +17,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from seldon.core import journal, tags
+from seldon import journal, tags
 from seldon.gui import theme
 
 MAX_LINES = 5000   # au-delà, les plus anciennes lignes sont oubliées
 MAX_PARTIAL = 64 * 1024   # ligne sans fin plus longue : affichée telle quelle
 FLUSH_MS = 50      # lignes ajoutées par paquets : un flot de logs ne fige pas l'interface
 STOP_GRACE_MS = 3000   # délai laissé à Seldon pour s'arrêter proprement avant l'arrêt forcé
-CONFIRM_TAG = tags.tag(tags.CONFIRM, "")   # balises sans jeton, telles qu'affichées (voir seldon.core.tags)
-MIC_TAG = tags.tag(tags.MIC, "")
-MUTE_SIGNALS = {True: getattr(signal, "SIGUSR1", None), False: getattr(signal, "SIGUSR2", None)}   # cf. seldon.core.pipeline
+CONFIRM_TAG = tags.tag(tags.CONFIRM, "")   # balise sans jeton, telle qu'affichée (voir seldon.tags)
 # Seldon tourne dans sa propre session : Arrêter atteint aussi ses sous-processus (lecteur audio,
-# commandes du terminal…), comme Ctrl+C au terminal, et rien ne reste orphelin à la fermeture.
+# commandes du terminal…), et rien ne reste orphelin à la fermeture.
 NEW_SESSION = os.name == "posix" and hasattr(QProcess, "setUnixProcessParameters")
 
 # niveaux des lignes (logging) ; les lignes de l'interface elles-mêmes restent toujours visibles.
@@ -37,7 +35,7 @@ DEBUG, INFO, CONVERSATION, WARNING, ERROR, ALWAYS = 10, 20, 25, 30, 40, 100
 LEVELS = [("Tout", 0), ("Sans DEBUG", INFO), ("Conversation", CONVERSATION), ("Avertissements", WARNING),
           ("Erreurs", ERROR)]
 
-# lignes du journal de Seldon (seldon.core.journal), affichées sans date ni nom de logger
+# lignes du journal de Seldon (seldon.journal), affichées sans date ni nom de logger
 _JOURNAL_LINE = re.compile(r"\d{4}-\d\d-\d\d (\d\d:\d\d:\d\d)[,.]\d+ INFO (%s): (.*)"
                            % "|".join(re.escape(n) for n in (journal.HEARD, journal.SAID, journal.THOUGHT)))
 
@@ -80,20 +78,19 @@ class RunnerPanel(QWidget):
 
     running_changed = Signal(bool)
     confirmation_requested = Signal(str)
-    state_changed = Signal()   # marche / arrêt, confirmation en attente, micro…
+    state_changed = Signal()   # marche / arrêt, confirmation en attente…
 
     def __init__(self, config_path: Path, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.config_path = config_path
         self.text_mode = False
         self.pending = False   # Seldon attend un oui / non sur son entrée standard
-        self.ready = False     # a déjà écrit : ses signaux sont en place, le bouton micro peut servir
         self.stopping = False  # arrêt demandé, en attente de la fin du processus
         self.failed = False    # dernier lancement terminé sur une erreur
         self.relaunch = False  # redémarrage demandé : relancé dans le même mode une fois arrêté
         self.min_level = 0
         self._pid = 0
-        self._token = ""       # jeton du lancement en cours : seules ses balises sont crues (seldon.core.tags)
+        self._token = ""       # jeton du lancement en cours : seules ses balises sont crues (seldon.tags)
         self._group = False    # le processus a sa propre session (groupe = pid)
         self._partial = ""
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
@@ -120,9 +117,6 @@ class RunnerPanel(QWidget):
         self.text_btn = QPushButton("▶  Mode texte", toolTip="Clavier + console (Ctrl+F5)")
         self.stop_btn = QPushButton("■  Arrêter", toolTip="Arrêter Seldon (Maj+F5) ; une seconde fois : arrêt immédiat")
         self.restart_btn = QPushButton("↻  Redémarrer", toolTip="Arrêter puis relancer Seldon dans le même mode (Ctrl+Maj+F5)")
-        self.mic_btn = QPushButton("🔇  Micro coupé", checkable=True)
-        self.mic_btn.setMinimumWidth(self.mic_btn.sizeHint().width())   # le libellé change, pas la place
-        self.mic_btn.toggled.connect(self.mute)
         self.filter = QComboBox(toolTip="Niveau des messages affichés")
         self.filter.setAccessibleName("Filtre du journal")
         for text, level in LEVELS:
@@ -139,7 +133,6 @@ class RunnerPanel(QWidget):
         top.addWidget(self.led)
         top.addWidget(theme.caption("commande"))
         top.addWidget(self.command, 1)
-        top.addWidget(self.mic_btn)
         top.addWidget(self.stop_btn)
         top.addWidget(self.restart_btn)
         top.addWidget(self.text_btn)
@@ -210,8 +203,7 @@ class RunnerPanel(QWidget):
         if self.running:
             return
         self.text_mode = text
-        self.pending = self.ready = self.stopping = self.failed = False
-        self._set_muted(False)
+        self.pending = self.stopping = self.failed = False
         args = self.arguments(text)
         self._partial = ""
         self._decoder.reset()
@@ -228,7 +220,7 @@ class RunnerPanel(QWidget):
         self._update()
 
     def stop(self, wait: bool = False) -> None:
-        """Ctrl+C (SIGINT, comme au terminal), puis arrêt forcé si Seldon ne rend pas la main en 3 s.
+        """SIGTERM (Seldon s'arrête proprement), puis arrêt forcé s'il ne rend pas la main en 3 s.
 
         Une seconde demande pendant l'arrêt force aussitôt la fin du processus (et annule un redémarrage).
         """
@@ -242,7 +234,7 @@ class RunnerPanel(QWidget):
             return
         self.stopping = True
         self._update()
-        if not self._signal(signal.SIGINT if hasattr(signal, "SIGINT") else None):
+        if not self._signal(getattr(signal, "SIGTERM", None)):
             self.process.terminate()
         if wait:
             if not self.process.waitForFinished(STOP_GRACE_MS):
@@ -253,19 +245,19 @@ class RunnerPanel(QWidget):
             QTimer.singleShot(STOP_GRACE_MS, lambda: self.running and self._pid == pid and self._kill())
 
     def restart(self) -> None:
-        """Arrêt habituel (Ctrl+C, puis arrêt forcé), puis relance dans le même mode une fois le processus terminé."""
+        """Arrêt habituel (SIGTERM, puis arrêt forcé), puis relance dans le même mode une fois le processus terminé."""
         if not self.running or self.stopping:
             return
         self.stop()
         self.relaunch = True
         self._update()
 
-    def _signal(self, sig: int | None, group: bool = True) -> bool:
-        """Envoie ``sig`` au processus (et à son groupe si ``group``) ; ``False`` si impossible."""
+    def _signal(self, sig: int | None) -> bool:
+        """Envoie ``sig`` au processus (et à son groupe) ; ``False`` si impossible."""
         if sig is None or not self._pid or os.name != "posix":
             return False
         try:
-            if group and self._group:
+            if self._group:
                 os.killpg(self._pid, sig)
             else:
                 os.kill(self._pid, sig)
@@ -276,26 +268,6 @@ class RunnerPanel(QWidget):
     def _kill(self) -> None:
         self._signal(getattr(signal, "SIGKILL", None))
         self.process.kill()
-
-    def mute(self, on: bool) -> None:
-        """Coupe (``on``) ou rétablit le micro de Seldon en mode vocal."""
-        sig = MUTE_SIGNALS[on]
-        # au seul processus principal : les sous-processus n'interceptent pas SIGUSR1 / SIGUSR2
-        if not (self.can_mute and self._signal(sig, group=False)):
-            self._set_muted(False)
-            return
-        self._update()
-
-    @property
-    def can_mute(self) -> bool:
-        return self.running and self.ready and not self.text_mode and not self.stopping and os.name == "posix"
-
-    def _set_muted(self, on: bool) -> None:
-        """Met le bouton dans l'état ``on`` sans envoyer de signal."""
-        self.mic_btn.blockSignals(True)
-        self.mic_btn.setChecked(on)
-        self.mic_btn.blockSignals(False)
-        self._update()
 
     def send(self) -> None:
         # une seule ligne : un retour à la ligne collé ne doit pas répondre d'avance à une autre question
@@ -336,9 +308,6 @@ class RunnerPanel(QWidget):
             lines.append(partial)
             partial = ""
         self._partial = partial
-        if lines and not self.ready:
-            self.ready = True
-            self._update()
         for raw in lines:
             line = next((s for s in reversed(raw.split("\r")) if s), "") if "\r" in raw else raw
             level, font = line_level(line), ""
@@ -352,15 +321,12 @@ class RunnerPanel(QWidget):
                 level = level or INFO
                 color = level_color(level)
             self._last = (level, color, font)
-            # balises avec le jeton de ce lancement seulement : une sortie qui les imite est un simple texte
-            confirm, mic = tags.tag(tags.CONFIRM, self._token), tags.tag(tags.MIC, self._token)
+            # balise avec le jeton de ce lancement seulement : une sortie qui l'imite est un simple texte
+            confirm = tags.tag(tags.CONFIRM, self._token)
             if line.startswith(confirm):   # en début de ligne seulement : pas une citation dans un log
                 self._ask(line[len(confirm):].removesuffix("[o/N]").strip())
                 color, level, font = theme.AMBER, ALWAYS, ""
                 line = CONFIRM_TAG + line[len(confirm):]   # le jeton n'est pas affiché
-            if (at := line.find(mic)) >= 0:   # état réel du micro, au cas où un signal serait perdu
-                self._set_muted(line[at + len(mic):].strip().startswith("coupé"))
-                line = line.replace(mic, MIC_TAG)
             self._push(line, color, level, font)
 
     def _ask(self, question: str) -> None:
@@ -381,7 +347,7 @@ class RunnerPanel(QWidget):
             self._push(rest, line_color(rest))
         self._partial = ""
         if self._group:   # sous-processus restés orphelins (le groupe survit à son meneur)
-            self._signal(getattr(signal, "SIGTERM", None))
+            self._signal(getattr(signal, "SIGKILL", None))
         self._pid = 0
         crashed = status == QProcess.ExitStatus.CrashExit
         if self.stopping:
@@ -393,8 +359,8 @@ class RunnerPanel(QWidget):
         else:
             self._note(f"— Seldon arrêté (code {code})")
         self._flush()
-        self.pending = self.ready = self.stopping = False
-        self._set_muted(False)
+        self.pending = self.stopping = False
+        self._update()
         self.running_changed.emit(False)
         if self.relaunch:
             self.relaunch = False
@@ -484,12 +450,6 @@ class RunnerPanel(QWidget):
         else:
             hint = "Mode vocal : parlez à Seldon ; ce champ sert aux confirmations"
         self.input.setPlaceholderText(hint)
-        self.mic_btn.setEnabled(self.can_mute)
-        muted = self.mic_btn.isChecked()
-        self.mic_btn.setText("🔇  Micro coupé" if muted else "🎙  Micro")
-        self.mic_btn.setAccessibleName("Rétablir le micro" if muted else "Couper le micro")
-        self.mic_btn.setToolTip("Mode vocal uniquement" if on and self.text_mode
-                                else "Couper / rétablir le micro (F6)")
         self.yes_btn.setVisible(self.pending)
         self.no_btn.setVisible(self.pending)
         self.confirm_bar.setVisible(self.pending)

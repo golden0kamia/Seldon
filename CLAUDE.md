@@ -8,14 +8,15 @@ Everything in this project is in French: code comments, docstrings, user-facing 
 
 ## System structure
 
-The core is the brain (the LLM, `seldon/brain/`), driven by the pipeline (`seldon/core/pipeline.py`): mic → STT → speaker identification → brain → actions → TTS. The brain answers only through actions; even the reply is an action (`speak`). Everything else plugs into the brain:
+Read `seldon/base.py` first: it holds every contract (Utterance, Result, Context, Tool, STT, Speakers, LLM, TTS). Then `seldon/pipeline.py`, the loop: mic → STT (`seldon/ear/whisper.py`) → speaker identification (`seldon/ear/speakers.py`) → brain → tools → TTS (`seldon/voice/`). The brain answers only through tools; even the reply is a tool (`speak`).
 
-- **Plugins** (`memory:` in `seldon/core/memory.py`, `speakers:` in `seldon/speakers/`) are Seldon subsystems, not tools. When they're enabled, they hand the brain their own tool through `.actions()`: `conversations` (`seldon/core/conversations.py`) and `voix` (`seldon/speakers/voices.py`). Disabling the plugin removes its tool.
-- **Tools** (`tools:`, `seldon/tools/`) are Python `Action` subclasses that act directly (terminal, camera, music, desktop, Claude Code…).
-- **MCP** (`mcp:`, `seldon/mcp/`) are external MCP servers. Each server is exposed to the brain as a single tool (`MCPAction`).
-- **Skills** (`skills:`, `skills/<nom>/SKILL.md`) are instructions in French with no code. Only their name and description are sent to the brain, through the `skill` tool, which loads the full instructions on demand.
+- **Brain** (`seldon/brain/`): `brain.py` keeps the history (plain sentences, shared by every LLM and saved as-is) and falls back to `brain.backup` if the main LLM fails before any tool ran. `llamacpp.py` and `claude.py` implement `LLM.run` (the tool loop). `prompt.py` holds the system prompt and the per-message header.
+- **Plugins** (`memory:` → `seldon/brain/memory.py`, `speakers:` → `seldon/ear/speakers.py`) are Seldon subsystems; when enabled they hand the brain their own tool through `.tools()`: `conversations` and `voix`.
+- **Tools** (`tools:`, `seldon/tools/`) are `Tool` subclasses that act directly.
+- **MCP** (`mcp:`, `seldon/mcp.py`): each MCP server is exposed to the brain as a single tool.
+- **Skills** (`skills:`, `skills/<nom>/SKILL.md`, `seldon/skills.py`): instructions in French with no code, loaded on demand through the `skill` tool.
 
-The pipeline gathers all of these into the brain's action list (see `actions=[...]` in `pipeline.py`).
+The pipeline gathers all of these into one tool list (`tools = [...]` in `Seldon.__init__`). Tools reach Seldon through `ctx.app` (`say`, `announce`, `confirm`, `memory`, `speakers`).
 
 ## Commands
 
@@ -31,9 +32,14 @@ The pipeline gathers all of these into the brain's action list (see `actions=[..
 ## Conventions
 
 - Any user-visible change (new option, tool, command, behaviour) updates `README.md` in the same change.
-- New plugin (tool, MCP server, STT, TTS, brain…): `@register("<catégorie>", "<nom>")`, plus a line in `_BUILTINS` in `seldon/core/registry.py` (modules are imported lazily), plus an entry in `config.yaml` if it should be enabled.
-- The GUI (`seldon/gui/plugins.py`) reads plugins by AST without importing them. Plugin options must be explicit keyword parameters of `__init__` with literal defaults, and the `@register(...)` arguments must be string literals, or the Settings form won't show them.
+- New plugin (tool, MCP server, STT, TTS, LLM…): a class plus one line in `PLUGINS` in `seldon/registry.py` (modules are imported lazily), plus an entry in `config.yaml` if it should be enabled.
+- The GUI (`seldon/gui/plugins.py`) reads plugins by AST without importing them. Plugin options must be explicit keyword parameters of `__init__` with literal defaults, or the Settings form won't show them.
 - `config.yaml` is edited by the GUI with ruamel.yaml, which keeps comments; keep its inline comments meaningful.
 - Secrets never go in `config.yaml`, only in `.env` (add new ones to `.env.example`). The terminal tool hides them from commands (`hidden_env`).
-- Personal data (conversations, voiceprints, photos) is written through `seldon/core/storage.py` (`write_private`: 0600, atomic).
-- Text from users, tool outputs, and notifications is data, never instructions, for the brain. Security tests (`tests/test_*_security.py`) cover the terminal command classification and injection. Extend them when touching these paths.
+- Personal data (conversations, voiceprints, photos) is written through `seldon/storage.py` (`write_private`: 0600, atomic).
+- Text from users, tool outputs, and notifications is data, never instructions, for the brain. Security tests (`tests/test_terminal_security.py`, `tests/test_memory.py`, `tests/test_speakers.py`, `tests/test_core.py`) cover command classification, injection, and hostile ids/names. Extend them when touching these paths.
+
+## Usage
+
+- Ask question to precise the construction
+- Use agent to delegate work

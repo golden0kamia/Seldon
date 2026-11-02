@@ -1,75 +1,36 @@
-"""Cerveau basé sur Claude : chaque action est exposée comme un outil.
+"""LLM Claude, de deux façons (option ``auth``) :
 
-Boucle : message utilisateur -> Claude choisit des outils -> on les exécute ->
-résultats renvoyés -> ... jusqu'à ce que Claude ait terminé.
-
-L'historique est conservé entre les tours (append-only : les blocs renvoyés
-par l'API, y compris les blocs de réflexion, sont réinjectés tels quels) ;
-au-delà d'une taille maximale, les plus anciens échanges sont allégés puis
-oubliés (``seldon.brain.history``).
-
-Deux façons de se connecter (option ``auth``) :
-- ``api`` : clé ``ANTHROPIC_API_KEY`` (fichier .env), facturation au token ;
+- ``api`` : clé ``ANTHROPIC_API_KEY`` (fichier .env), facturée au token ;
 - ``abonnement`` : compte claude.ai (Pro / Max) via Claude Code, connecté une
-  fois avec ``claude auth login`` ; décompté des limites de l'abonnement
-  (voir ``seldon.brain.claude_account``).
+  fois avec ``claude auth login``. Claude Code ne reçoit aucun de ses propres
+  outils ni réglages : seulement les outils de Seldon, par un serveur MCP interne.
 """
 
 from __future__ import annotations
 
 import base64
 import logging
+import shutil
 from typing import Any
 
-from seldon.brain import history
-from seldon.brain.base import ActionExecutor, Brain, ends_turn
-from seldon.brain.prompts import STEP_LIMIT_REPLY, SYSTEM_PROMPT, user_message
-from seldon.core import journal
-from seldon.core.action import Action
-from seldon.core.errors import SeldonError
-from seldon.core.registry import register
-from seldon.core.types import ActionResult, Utterance
-
-try:   # pas nécessaire avec auth: abonnement
-    import anthropic
-except ImportError:
-    anthropic = None
+from seldon import journal
+from seldon.base import LLM, Result, Tool, ToolCall, turn_over
+from seldon.errors import SeldonError
 
 log = logging.getLogger(__name__)
 
-
-def _result_content(result: ActionResult) -> list[dict[str, Any]]:
-    content: list[dict[str, Any]] = [
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": img.media_type,
-                "data": base64.standard_b64encode(img.data).decode("ascii"),
-            },
-        }
-        for img in result.images
-    ]
-    content.append({"type": "text", "text": result.text or ("Erreur." if result.is_error else "OK.")})
-    return content
+STEP_LIMIT = "Désolé, je n'ai pas réussi à terminer cette demande."
+LOGIN_HINT = "connectez votre compte une fois : claude auth login (dans un terminal)"
 
 
-@register("brain", "claude")
-class ClaudeBrain(Brain):
+class Claude(LLM):
     def __init__(
         self,
-        auth: str = "api",                 # api | abonnement — clé ANTHROPIC_API_KEY au token, ou compte claude.ai
+        auth: str = "api",              # api | abonnement
         model: str = "claude-opus-5-5",
-        effort: str = "low",               # low | medium | high | xhigh | max
+        effort: str = "low",            # low | medium | high | xhigh | max
         max_tokens: int = 16000,
-        max_steps: int = 10,               # appels API max par prise de parole
-        max_history_messages: int = 200,   # au-delà, les plus anciens échanges sont oubliés
-        max_history_chars: int = 60000,    # idem en taille ; les anciens résultats d'outils sont d'abord abrégés
-        keep_images: int = 1,              # captures gardées dans l'historique (les plus récentes)
-        fallbacks: bool = True,            # relance côté serveur en cas de refus
-        extra_instructions: str = "",
-        timeout_s: float = 120,
-        claude_bin: str | None = None,     # abonnement : chemin du CLI claude (None = celui du SDK)
+        max_steps: int = 10,            # appels au modèle au plus par phrase
     ) -> None:
         if auth not in ("api", "abonnement"):
             raise ValueError(f"auth inconnu : {auth!r} (api ou abonnement)")
@@ -78,160 +39,118 @@ class ClaudeBrain(Brain):
         self.effort = effort
         self.max_tokens = max_tokens
         self.max_steps = max_steps
-        self.max_history_messages = max_history_messages
-        self.max_history_chars = max_history_chars
-        self.keep_images = keep_images
-        self.fallbacks = fallbacks
-        self.system = SYSTEM_PROMPT + (f"\n{extra_instructions.strip()}\n" if extra_instructions else "")
-        self.timeout_s = timeout_s
-        self.claude_bin = claude_bin
         self.client: Any = None
-        self.messages: list[dict[str, Any]] = []
-        self._pending: list[dict[str, Any]] = []   # tool_result non encore envoyés
-        self.account = None
-        if auth == "abonnement":
-            from seldon.brain.claude_account import AccountSession
-
-            self.account = AccountSession(self)
 
     async def start(self) -> None:
-        if self.account is not None:
-            self.account.check()
+        if self.auth == "abonnement":
+            import claude_agent_sdk  # noqa: F401  (module absent : message d'installation)
+            if not shutil.which("claude"):
+                log.debug("CLI claude absent du PATH : celui du SDK sera utilisé")
             return
-        if anthropic is None:
-            raise SeldonError("Module anthropic absent", "pip install 'seldon[llm-claude]'")
+        import anthropic
+
         try:
-            self.client = anthropic.AsyncAnthropic(timeout=self.timeout_s)
+            self.client = anthropic.AsyncAnthropic()
         except anthropic.AnthropicError as e:
-            raise SeldonError("Clé API Anthropic absente", "définissez la variable ANTHROPIC_API_KEY avant de lancer Seldon") from e
+            raise SeldonError("Clé API Anthropic absente", "ajoutez ANTHROPIC_API_KEY dans .env") from e
 
-    async def stop(self) -> None:
-        if self.account is not None:
-            await self.account.close()
+    async def run(self, system: str, messages: list[dict[str, str]], tools: list[Tool],
+                  call: ToolCall) -> str | None:
+        if self.auth == "abonnement":
+            return await self._run_account(system, messages, tools, call)
+        return await self._run_api(system, messages, tools, call)
 
-    async def warmup(self, actions: list[Action]) -> None:
-        if self.account is not None:   # démarre Claude Code avant la première phrase
-            await self.account.connect(actions)
+    # --- clé API : la boucle outils <-> modèle est ici ----------------------------------
 
-    def reset(self) -> None:
-        self.messages.clear()
-        self._pending.clear()
-        if self.account is not None:
-            self.account.forget()
-
-    def get_state(self) -> dict[str, Any]:
-        return {**super().get_state(), "pending": list(self._pending)}
-
-    def append_exchange(self, user: str, assistant: str) -> None:
-        pending, self._pending = self._pending, []
-        self.messages.append({"role": "user", "content": [*pending, {"type": "text", "text": user}]})
-        self.messages.append({"role": "assistant", "content": [{"type": "text", "text": assistant}]})
-        if self.account is not None:
-            self.account.added(2)
-
-    def set_state(self, state: dict[str, Any]) -> None:
-        super().set_state(state)
-        self._pending = list(state.get("pending", []))
-        if self.account is not None:
-            self._pending.clear()   # tool_result d'une session API : sans objet ici
-            self.account.forget()
-
-    async def _call(self, tools: list[dict[str, Any]]):
-        kwargs: dict[str, Any] = dict(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            system=self.system,
-            tools=tools,
-            messages=self.messages,
-            thinking={"type": "adaptive", "display": "summarized"},   # résumé lisible, pour le journal
-            output_config={"effort": self.effort},
-            cache_control={"type": "ephemeral"},
-        )
-        if self.fallbacks:
-            return await self.client.beta.messages.create(
-                betas=["server-side-fallback-2026-07-01"], fallbacks="default", **kwargs
+    async def _run_api(self, system: str, messages: list[dict[str, str]], tools: list[Tool],
+                       call: ToolCall) -> str | None:
+        convo: list[dict[str, Any]] = list(messages)
+        schemas = [{"name": t.name, "description": t.description, "input_schema": t.parameters} for t in tools]
+        for _ in range(self.max_steps):
+            response = await self.client.messages.create(
+                model=self.model, max_tokens=self.max_tokens, system=system, tools=schemas, messages=convo,
+                thinking={"type": "adaptive", "display": "summarized"}, output_config={"effort": self.effort},
+                cache_control={"type": "ephemeral"},
             )
-        return await self.client.messages.create(**kwargs)
+            for block in response.content:
+                if block.type == "thinking":
+                    journal.thought(block.thinking)
+            text = "".join(b.text for b in response.content if b.type == "text").strip()
+            calls = [b for b in response.content if b.type == "tool_use"]
+            if response.stop_reason == "refusal":
+                return "Désolé, je ne peux pas faire ça."
+            if not calls or response.stop_reason != "tool_use":
+                return text or None
+            journal.thought(text)
+            convo.append({"role": "assistant", "content": [b.model_dump(mode="json", exclude_none=True)
+                                                           for b in response.content]})
+            done, results = [], []
+            for c in calls:
+                result = await call(c.name, dict(c.input))
+                done.append((c.name, result))
+                results.append({"type": "tool_result", "tool_use_id": c.id, "is_error": result.error,
+                                "content": _content(result, "source")})
+            if turn_over(tools, done):
+                return None
+            convo.append({"role": "user", "content": results})
+        return STEP_LIMIT
 
-    async def summarize(self, instructions: str, text: str) -> str | None:
-        if self.account is not None:
-            return await self.account.summarize(instructions, text)
-        if self.client is None:
-            return None
-        response = await self.client.messages.create(
-            model=self.model,
-            max_tokens=self.max_tokens,
-            system=instructions,
-            messages=[{"role": "user", "content": text}],
-            output_config={"effort": "low"},
+    # --- abonnement : Claude Code fait la boucle, nos outils lui sont prêtés -------------
+
+    async def _run_account(self, system: str, messages: list[dict[str, str]], tools: list[Tool],
+                           call: ToolCall) -> str | None:
+        from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, ResultMessage, SdkMcpTool, TextBlock,
+                                      ThinkingBlock, create_sdk_mcp_server, query)
+
+        def handler(tool: Tool):
+            async def run(args: dict[str, Any]) -> dict[str, Any]:
+                result = await call(tool.name, dict(args))
+                content = _content(result, "mcp")
+                if tool.ends_turn and not result.error:
+                    content.append({"type": "text", "text": "(Réponse prononcée : termine ton tour sans rien ajouter.)"})
+                return {"content": content, "is_error": result.error}
+            return run
+
+        server = create_sdk_mcp_server("seldon", tools=[
+            SdkMcpTool(t.name, t.description, t.parameters, handler(t)) for t in tools])
+        options = ClaudeAgentOptions(
+            system_prompt=system + "\nTes outils portent le préfixe mcp__seldon__ (ex. mcp__seldon__speak).\n",
+            tools=[], strict_mcp_config=True, setting_sources=[],   # rien de la config Claude Code de l'utilisateur
+            mcp_servers={"seldon": server}, allowed_tools=[f"mcp__seldon__{t.name}" for t in tools],
+            model=self.model, effort=self.effort, max_turns=self.max_steps,
+            env={"ANTHROPIC_API_KEY": "", "ANTHROPIC_AUTH_TOKEN": ""},   # le compte, pas la clé API
         )
-        return "".join(b.text for b in response.content if b.type == "text").strip() or None
+        # Une session neuve par phrase : la conversation lui est donnée en texte.
+        earlier = "\n".join(f"{'Utilisateur' if m['role'] == 'user' else 'Seldon'} : {m['content']}"
+                            for m in messages[:-1])
+        prompt = (f"(Échanges précédents :\n{earlier})\n\n" if earlier else "") + messages[-1]["content"]
 
-    async def handle(self, utterance: Utterance, actions: list[Action], execute: ActionExecutor) -> str | None:
-        if self.account is not None:
-            return await self.account.handle(utterance, actions, execute)
-        assert self.client is not None, "start() n'a pas été appelé"
-        history.compact(self.messages, history.ANTHROPIC, self.max_history_chars, self.max_history_messages)
-
-        pending, self._pending = self._pending, []
-        content = [*pending, {"type": "text", "text": user_message(utterance)}]
-
-        snapshot = len(self.messages)
-        self.messages.append({"role": "user", "content": content})
-        tools = [a.tool_definition() for a in actions]
-
-        try:
-            for _ in range(self.max_steps):
-                response = await self._call(tools)
-                # Blocs convertis en dicts JSON : l'historique peut être sauvegardé tel quel.
-                content = [b.model_dump(mode="json", exclude_none=True) for b in response.content]
-                self.messages.append({"role": "assistant", "content": content})
-
-                text = "".join(b.text for b in response.content if b.type == "text").strip()
-                calls = [b for b in response.content if b.type == "tool_use"]
-                for block in response.content:
-                    if block.type == "thinking":
+        text, final = "", None
+        async for msg in query(prompt=prompt, options=options):
+            if isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, ThinkingBlock):
                         journal.thought(block.thinking)
-                if calls:
-                    journal.thought(text)   # texte écrit avec les appels d'outils : jamais prononcé
-                if calls and response.stop_reason != "tool_use":
-                    # Réponse coupée (max_tokens, refus) : un tool_use sans résultat rendrait
-                    # l'historique invalide pour toutes les requêtes suivantes.
-                    kept = [b for b in content if b.get("type") != "tool_use"]
-                    content[:] = kept or [{"type": "text", "text": text or "…"}]
-                    calls = []
+                text = "".join(b.text for b in msg.content if isinstance(b, TextBlock)).strip() or text
+            elif isinstance(msg, ResultMessage):
+                final = msg
+        if final is None:
+            raise SeldonError("Claude (abonnement) : réponse interrompue")
+        if final.subtype == "error_max_turns":
+            return STEP_LIMIT
+        if final.is_error:
+            detail = str(final.result or final.subtype)
+            hint = LOGIN_HINT if "login" in detail.lower() or "auth" in detail.lower() else None
+            raise SeldonError(f"Claude (abonnement) : {detail}", hint)
+        return text or None
 
-                if response.stop_reason == "refusal":
-                    log.warning("Refus du modèle : %s", response.stop_details)
-                    return "Désolé, je ne peux pas faire ça."
-                if not calls:
-                    return text or None
 
-                results, done = [], []
-                for call in calls:
-                    result = await execute(call.name, dict(call.input))
-                    done.append((call.name, result))
-                    results.append({
-                        "type": "tool_result",
-                        "tool_use_id": call.id,
-                        "content": _result_content(result),
-                        "is_error": result.is_error,
-                    })
-                if ends_turn(actions, done):
-                    # Réponse prononcée : fin du tour. Les résultats partiront avec
-                    # le prochain message utilisateur.
-                    self._pending = results
-                    return None
-                self.messages.append({"role": "user", "content": results})
-                if any(r.images for _, r in done):
-                    history.drop_old_images(self.messages, history.ANTHROPIC, self.keep_images)
-            # Limite atteinte : les derniers résultats d'outils partiront avec
-            # le prochain message utilisateur (pas deux tours "user" d'affilée).
-            log.warning("Nombre maximal d'étapes atteint (%d)", self.max_steps)
-            self._pending = self.messages.pop()["content"]
-            return STEP_LIMIT_REPLY
-        except BaseException:
-            # Revient à l'état cohérent précédent (pas de tool_use sans résultat).
-            del self.messages[snapshot:]
-            self._pending = pending
-            raise
+def _content(result: Result, style: str) -> list[dict[str, Any]]:
+    """Résultat d'outil au format Anthropic (``source``) ou MCP (``mcp``)."""
+    blocks: list[dict[str, Any]] = []
+    for img in result.images:
+        data = base64.standard_b64encode(img.data).decode("ascii")
+        blocks.append({"type": "image", "source": {"type": "base64", "media_type": img.media_type, "data": data}}
+                      if style == "source" else {"type": "image", "data": data, "mimeType": img.media_type})
+    blocks.append({"type": "text", "text": result.text or ("Erreur." if result.error else "OK.")})
+    return blocks

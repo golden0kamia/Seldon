@@ -1,11 +1,10 @@
 """Page Structure : schéma bloc des sous-systèmes de Seldon et de leurs échanges.
 
 Le schéma est décrit ici (``BLOCKS``, ``LINKS``) d'après le pipeline : une phrase va
-du micro à la reconnaissance vocale, puis l'``Assistant`` l'identifie, la confie au
-cerveau, exécute les actions (tools, MCP, skills) qu'il demande et fait parler la synthèse vocale. Seuls
-les moteurs disponibles dans chaque bloc sont lus du code (``plugins.discover``, par
-AST, sans rien importer). Un clic sur un bloc éclaire ses liens et le décrit ; un
-double-clic ouvre son fichier principal.
+du micro à l'écoute, puis ``Seldon`` (``seldon/pipeline.py``) identifie la voix, la
+confie au cerveau, qui appelle ses outils (tools, MCP, skills, mémoire) et répond par
+la voix. Les moteurs de chaque bloc viennent du registre (``seldon.registry.PLUGINS``).
+Un clic sur un bloc éclaire ses liens et le décrit ; un double-clic ouvre son fichier.
 """
 
 from __future__ import annotations
@@ -17,11 +16,12 @@ from pathlib import Path
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import (
-    QFrame, QGraphicsItem, QGraphicsPathItem, QGraphicsScene, QGraphicsView, QHBoxLayout, QLabel, QPushButton,
-    QVBoxLayout, QWidget,
+    QFrame, QGraphicsItem, QGraphicsPathItem, QGraphicsScene, QGraphicsView, QHBoxLayout, QLabel, QVBoxLayout,
+    QWidget,
 )
 
-from seldon.gui import plugins, theme
+from seldon.gui import theme
+from seldon.registry import PLUGINS
 
 PACKAGE_DIR = Path(__file__).resolve().parent.parent   # le paquet ``seldon`` lui-même
 
@@ -47,69 +47,60 @@ class Link:
 
 
 BLOCKS = [
-    Block("config", "Configuration", 1, 0, "config.yaml validé (Config) et identifiants de .env ; "
-          "le registre crée les moteurs choisis.", "config.py"),
-    Block("gui", "Interface", 2, 0, "Édite config.yaml, lance Seldon, suit son journal, "
-          "répond à ses confirmations et coupe le micro (signaux).", "gui/window.py"),
-    Block("events", "Bus d'événements", 3, 0, "utterance, command, action.start/end, response, error… "
-          "pour brancher des extensions sans toucher au pipeline.", "core/events.py"),
+    Block("base", "Contrats", 0, 0, "Utterance, Result, Tool, STT, LLM, TTS : les interfaces que chaque "
+          "plugin implémente. À lire en premier.", "base.py"),
+    Block("config", "Configuration", 1, 0, "config.yaml et secrets de .env ; le registre (registry.py) "
+          "crée les plugins choisis.", "config.py"),
+    Block("gui", "Interface", 2, 0, "Édite config.yaml, lance Seldon, suit son journal et répond "
+          "à ses confirmations.", "gui/window.py"),
+    Block("journal", "Journal", 3, 0, "Conversation, réflexions du cerveau et actions, écrites dans "
+          "les logs que lit la page Journal.", "journal.py"),
     Block("mic", "Micro · clavier", 0, 1, "Son capté au micro, ou lignes tapées (--text, Journal)."),
-    Block("stt", "Reconnaissance vocale", 1, 1, "Transcrit la parole et produit "
-          "des Utterance.", "stt/base.py", "stt"),
-    Block("pipeline", "Pipeline", 2, 1, "L'Assistant : orchestre chaque prise de parole, du texte "
-          "reconnu à la réponse dite.", "core/pipeline.py"),
-    Block("tts", "Synthèse vocale", 3, 1, "Dit les réponses ; l'écoute est en pause pendant ce temps.",
-          "tts/base.py", "tts"),
+    Block("stt", "Écoute", 1, 1, "Micro et reconnaissance vocale (Whisper), ou clavier : "
+          "produit des Utterance.", "ear/whisper.py", "stt"),
+    Block("pipeline", "Pipeline", 2, 1, "La boucle (classe Seldon) : écoute → voix → cerveau → parole, "
+          "pour chaque phrase.", "pipeline.py"),
+    Block("tts", "Voix", 3, 1, "Synthèse vocale : dit les réponses ; l'écoute est en pause pendant ce temps.",
+          "voice/piper.py", "tts"),
     Block("speaker_out", "Haut-parleur", 4, 1, "Sortie audio (ou console avec --text)."),
-    Block("cli", "Outils hors ligne", 0, 2, "seldon.cli : enrôlement des voix (enroll), "
-          "lu au démarrage.", "cli/enroll.py"),
-    Block("speakers", "Identification des voix", 1, 2, "Reconnaît qui parle à partir des voix "
-          "enrôlées.", "speakers/base.py", "speakers"),
-    Block("brain", "Cerveau", 2, 2, "Modèle de langage : reçoit la phrase et les outils, "
-          "appelle des actions, renvoie la réponse.", "brain/base.py", "brain"),
-    Block("tools", "Tools", 3, 2, "Actions en Python appelées par le cerveau, exécutées par le "
-          "pipeline (avec confirmation si besoin).", "core/action.py", "tools"),
-    Block("memory", "Mémoire", 4, 2, "Conversations sauvegardées, reprise, notes de contexte "
-          "et résumés des longues conversations.", "core/memory.py"),
-    Block("commands", "Commandes locales", 1, 3, "« /commande » ou phrase reconnue : traitée sans "
-          "le cerveau (couper le micro, quitter…).", "core/commands.py"),
-    Block("skills", "Skills", 2, 3, "Consignes skills/<nom>/SKILL.md : le cerveau les charge "
-          "quand une demande s'y prête et les suit avec les tools.", "skills/base.py"),
-    Block("mcp", "Serveurs MCP", 3, 3, "Outils de serveurs MCP (Home Assistant, Nextcloud) proposés "
-          "au cerveau, exécutés par le pipeline.", "mcp/base.py", "mcp"),
+    Block("speakers", "Identification des voix", 1, 2, "Reconnaît qui parle ; son outil « voix » "
+          "apprend une voix inconnue.", "ear/speakers.py", "speakers"),
+    Block("brain", "Cerveau", 2, 2, "Historique et boucle d'outils autour du modèle de langage, "
+          "avec cerveau de secours ; répond par l'outil speak.", "brain/brain.py", "brain"),
+    Block("tools", "Tools", 3, 2, "Outils en Python appelés par le cerveau (avec confirmation "
+          "si besoin) : speak, terminal, caméra…", "tools/speak.py", "tools"),
+    Block("memory", "Mémoire", 4, 2, "Conversations sauvegardées après chaque phrase ; outil "
+          "« conversations » pour les retrouver et les reprendre.", "brain/memory.py"),
+    Block("skills", "Skills", 2, 3, "Outil « skill » : consignes skills/<nom>/SKILL.md chargées "
+          "quand une demande s'y prête.", "skills.py"),
+    Block("mcp", "Serveurs MCP", 3, 3, "Un outil par serveur MCP (Home Assistant…), proposé au cerveau.",
+          "mcp.py", "mcp"),
     Block("services", "Services externes", 4, 3, "Home Assistant, Nextcloud, Feishin, "
-          "Claude Code, bureau du PC, caméra…"),
+          "bureau du PC, caméra…"),
 ]
 
 LINKS = [
     Link("gui", "config", "édite"),
-    Link("config", "pipeline", "crée les moteurs"),
-    Link("gui", "pipeline", "lance · journal", both=True),
-    Link("pipeline", "events", "emit()"),
+    Link("config", "pipeline", "crée les plugins"),
+    Link("gui", "pipeline", "lance · confirmations", both=True),
+    Link("pipeline", "journal", "logs"),
+    Link("journal", "gui", "affiché"),
     Link("mic", "stt", "son · texte"),
     Link("stt", "pipeline", "Utterance"),
     Link("pipeline", "tts", "speak()"),
     Link("tts", "speaker_out", "voix"),
-    Link("cli", "speakers", "voix"),
     Link("pipeline", "speakers", "identify()", both=True),
-    Link("pipeline", "brain", "handle() ⇄ outils", both=True),
-    Link("pipeline", "tools", "run()"),
-    Link("pipeline", "mcp", "tools/call", at=0.8),
+    Link("pipeline", "brain", "phrase ⇄ réponse", both=True),
+    Link("pipeline", "memory", "save()", at=0.7),
+    Link("brain", "tools", "run()"),
+    Link("brain", "mcp", "tools/call", at=0.6),
     Link("brain", "skills", "consignes"),
-    Link("pipeline", "memory", "tours · notes", both=True, at=0.7),
-    Link("pipeline", "commands", "/commande", at=0.75),
-    Link("tools", "tts", "annonces", at=0.8),
-    Link("tools", "memory", "historique"),
     Link("tools", "services", "HTTP · D-Bus", at=0.6),
     Link("mcp", "services", "MCP"),
 ]
 
 BOX_W, BOX_H, COL, ROW = 230, 72, 320, 160
 MAX_SCALE = 1.3   # « Ajuster » agrandit le schéma jusque-là
-
-
-def engines(category: str, found: dict[str, dict]) -> list[str]:
-    return sorted(found.get(category, {}))
 
 
 class BlockItem(QGraphicsItem):
@@ -230,10 +221,10 @@ class DiagramView(QGraphicsView):
         self.blocks: dict[str, BlockItem] = {}
         self.links: list[LinkItem] = []
 
-    def build(self, found: dict[str, dict]) -> None:
+    def build(self) -> None:
         scene = self.scene()
         scene.clear()
-        self.blocks = {b.key: BlockItem(b, engines(b.category, found)) for b in BLOCKS}
+        self.blocks = {b.key: BlockItem(b, sorted(PLUGINS.get(b.category, {}))) for b in BLOCKS}
         self.links = [LinkItem(link, self.blocks[link.src], self.blocks[link.dst]) for link in LINKS]
         for item in [*self.blocks.values(), *self.links]:
             scene.addItem(item)
@@ -285,18 +276,15 @@ class StructurePanel(QWidget):
     def __init__(self, root: Path = PACKAGE_DIR, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.root = root
-        self.loaded = False
         self.selected: str | None = None
 
-        reload_btn = QPushButton("Actualiser", toolTip="Relire les moteurs disponibles")
-        reload_btn.clicked.connect(self.reload)
         top = QHBoxLayout()
         top.setSpacing(theme.SPACE)
         top.addWidget(theme.caption("structure"))
         top.addStretch(1)
-        top.addWidget(reload_btn)
 
         self.view = DiagramView()
+        self.view.build()
         self.view.block_clicked.connect(lambda key: self.select(key or None))
         self.view.block_activated.connect(self._open)
         self.detail = QLabel(wordWrap=True)
@@ -313,17 +301,6 @@ class StructurePanel(QWidget):
         lay.addLayout(head)
         lay.addWidget(screen, 1)
         self.theme_changed()
-
-    def ensure_loaded(self) -> None:
-        """Lecture paresseuse des moteurs : au premier affichage de la page."""
-        if not self.loaded:
-            self.reload()
-
-    def reload(self) -> None:
-        self.view.build(plugins.discover(self.root))
-        self.loaded = True
-        self.select(self.selected)
-        self.view.fit()
 
     def select(self, key: str | None) -> None:
         self.selected = key if key in self.view.blocks else None
@@ -348,7 +325,7 @@ class StructurePanel(QWidget):
 
     def _open(self, key: str) -> None:
         self.select(key)
-        if path := self.view.blocks[key].block.path:
+        if (path := self.view.blocks[key].block.path) and (self.root / path).is_file():
             self.open_requested.emit(self.root / path, 1)
 
     def theme_changed(self) -> None:

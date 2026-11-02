@@ -6,18 +6,14 @@ import os
 
 import pytest
 
-from seldon.core.types import ActionContext, Utterance
+from seldon.base import Context
 from seldon.tools.terminal import BENIGN, SEVERE, STANDARD, Terminal
+from tests.conftest import FakeApp, context
 
 
-def make_ctx(answer: bool = True, speaker: str | None = "alice") -> tuple[ActionContext, list[str]]:
-    asked: list[str] = []
-
-    async def confirm(question: str) -> bool:
-        asked.append(question)
-        return answer
-
-    return ActionContext(utterance=Utterance(text="...", speaker=speaker), confirm=confirm), asked
+def make_ctx(answer: bool = True, speaker: str | None = "alice") -> tuple[Context, list[str]]:
+    app = FakeApp(answer)
+    return context(app, "...", speaker), app.questions
 
 
 @pytest.mark.parametrize("cmd", [
@@ -98,34 +94,34 @@ def test_admin_cannot_skip_confirmation_with_obfuscation():
 async def test_allowed_speakers_ignores_case():
     ctx, _ = make_ctx(speaker="ALICE")
     r = await Terminal(mode="auto", allowed_speakers=["alice"]).run({"command": "mkdir -p x", "cwd": "/tmp"}, ctx)
-    assert not r.is_error
+    assert not r.error
 
 
 @pytest.mark.parametrize("timeout", ["abc", [1]])
 async def test_bad_timeout(timeout):
     ctx, _ = make_ctx()
     r = await Terminal(mode="auto").run({"command": "echo x", "timeout": timeout}, ctx)
-    assert r.is_error and "Délai invalide" in r.text
+    assert r.error and "Délai invalide" in r.text
 
 
 @pytest.mark.parametrize("timeout", [-5, float("nan"), float("inf")])
 async def test_odd_timeout_uses_default(timeout):
     ctx, _ = make_ctx()
     r = await Terminal(mode="auto", max_timeout=2).run({"command": "echo ok", "timeout": timeout}, ctx)
-    assert not r.is_error and "ok" in r.text
+    assert not r.error and "ok" in r.text
 
 
 async def test_endless_output_is_cut():
     ctx, _ = make_ctx()
     t = Terminal(mode="auto", max_output_chars=200, max_read_bytes=2_000_000)
     r = await t.run({"command": "yes", "timeout": 20}, ctx)
-    assert r.is_error and "trop volumineuse" in r.text and len(r.text) < 600
+    assert r.error and "trop volumineuse" in r.text and len(r.text) < 600
 
 
 async def test_timeout_keeps_partial_output():
     ctx, _ = make_ctx()
     r = await Terminal(mode="auto").run({"command": "echo début; sleep 30", "timeout": 0.5}, ctx)
-    assert r.is_error and "Délai" in r.text and "début" in r.text
+    assert r.error and "Délai" in r.text and "début" in r.text
 
 
 async def test_secrets_hidden_from_commands(monkeypatch):

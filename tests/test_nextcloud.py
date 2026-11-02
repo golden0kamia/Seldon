@@ -7,8 +7,9 @@ from datetime import date, datetime, timedelta
 import httpx
 import pytest
 
-from seldon.core.types import ActionContext
+from seldon.base import Context
 from seldon.tools.nextcloud import Nextcloud, complete_todo, ical_escape, norm_path, parse_ical
+from tests.conftest import FakeApp, context
 
 HOST = "https://nc.test"
 DAV = "/remote.php/dav"
@@ -132,25 +133,23 @@ def make(server: FakeDAV, **options) -> Nextcloud:
     return nc
 
 
-def ctx(answer: bool = True, asked: list | None = None) -> ActionContext:
-    async def confirm(question: str) -> bool:
-        if asked is not None:
-            asked.append(question)
-        return answer
-
-    return ActionContext(confirm=confirm)
+def ctx(answer: bool = True, asked: list | None = None) -> Context:
+    app = FakeApp(answer)
+    if asked is not None:
+        app.questions = asked
+    return context(app)
 
 
 async def test_missing_credentials(monkeypatch):
     for var in ("NEXTCLOUD_HOST", "NEXTCLOUD_USERNAME", "NEXTCLOUD_PASSWORD"):
         monkeypatch.delenv(var, raising=False)
     result = await Nextcloud().run({"command": "files_list"}, ctx())
-    assert result.is_error and "NEXTCLOUD_PASSWORD" in result.text
+    assert result.error and "NEXTCLOUD_PASSWORD" in result.text
 
 
 def test_apps_limit_commands(server):
     nc = Nextcloud(apps=["calendar"])
-    assert nc.input_schema["properties"]["command"]["enum"] == ["events", "event_create"]
+    assert nc.parameters["properties"]["command"]["enum"] == ["events", "event_create"]
     assert "files_list" not in nc.description
     with pytest.raises(ValueError):
         Nextcloud(apps=["deck"])
@@ -169,7 +168,7 @@ def test_norm_path():
 async def test_traversal_sends_nothing(server):
     nc = make(server)
     result = await nc.run({"command": "file_read", "path": "../../calendars/bob"}, ctx())
-    assert result.is_error and not server.requests
+    assert result.error and not server.requests
 
 
 async def test_list_and_read(server):
@@ -186,17 +185,17 @@ async def test_write_new_append_and_overwrite(server):
     nc = make(server)
     asked: list[str] = []
     r = await nc.run({"command": "file_write", "path": "Documents/neuf.txt", "content": "salut"}, ctx(asked=asked))
-    assert not r.is_error and server.files["Documents/neuf.txt"] == "salut" and not asked
+    assert not r.error and server.files["Documents/neuf.txt"] == "salut" and not asked
     await nc.run({"command": "file_write", "path": "Documents/liste.md", "content": "beurre", "append": True}, ctx())
     assert server.files["Documents/liste.md"] == "lait\noeufs\nbeurre"
     r = await nc.run({"command": "file_write", "path": "Documents/liste.md", "content": "rien"}, ctx(False))
-    assert r.is_error and server.files["Documents/liste.md"].startswith("lait")   # écrasement refusé
+    assert r.error and server.files["Documents/liste.md"].startswith("lait")   # écrasement refusé
 
 
 async def test_delete_and_move_need_confirmation(server):
     nc = make(server)
     r = await nc.run({"command": "file_delete", "path": "Documents/liste.md"}, ctx(False))
-    assert r.is_error and "Documents/liste.md" in server.files
+    assert r.error and "Documents/liste.md" in server.files
     assert not any(q.method == "DELETE" for q in server.requests)
     await nc.run({"command": "file_move", "path": "Documents/liste.md", "destination": "Archives/liste.md"}, ctx())
     assert "Archives/liste.md" in server.files
@@ -207,7 +206,7 @@ async def test_delete_and_move_need_confirmation(server):
 async def test_confirm_writes_asks_before_creating(server):
     nc = make(server, confirm_writes=True)
     r = await nc.run({"command": "note_write", "title": "Idées", "content": "x"}, ctx(False))
-    assert r.is_error and "Notes/Idées.md" not in server.files
+    assert r.error and "Notes/Idées.md" not in server.files
 
 
 async def test_notes(server):
@@ -244,7 +243,7 @@ async def test_event_create_cannot_inject_properties(server):
     title = "Réunion\r\nATTENDEE:mailto:pirate@example.com\nEND:VEVENT"
     r = await nc.run({"command": "event_create", "title": title, "start": "2030-05-02T14:00",
                       "location": "Salle; 2, étage"}, ctx())
-    assert not r.is_error
+    assert not r.error
     body = next(iter(server.todos.values()))
     lines = body.replace("\r\n ", "").split("\r\n")
     assert not any(line.startswith("ATTENDEE") for line in lines)
@@ -257,7 +256,7 @@ async def test_event_create_cannot_inject_properties(server):
 async def test_event_create_rejects_end_before_start(server):
     r = await make(server).run({"command": "event_create", "title": "x", "start": "2030-05-02T14:00",
                                 "end": "2030-05-02T13:00"}, ctx())
-    assert r.is_error
+    assert r.error
 
 
 async def test_tasks_and_complete(server):
@@ -273,7 +272,7 @@ async def test_tasks_and_complete(server):
     soon = (await nc.run({"command": "tasks", "days": 1}, ctx())).text
     assert "Payer la facture" in soon and "en retard" in soon and "Vacances" not in soon and "Fait" not in soon
     r = await nc.run({"command": "task_complete", "title": "facture"}, ctx())
-    assert not r.is_error
+    assert not r.error
     put = next(q for q in server.requests if q.method == "PUT")
     assert put.headers["if-match"] == '"t"' and "STATUS:COMPLETED" in server.todos[href]
     assert "NEEDS-ACTION" not in server.todos[href]

@@ -8,16 +8,13 @@ from __future__ import annotations
 
 import copy
 import io
-from pathlib import Path
 from typing import Any
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
-from seldon.gui.fsutil import write_atomic
-
 STAGES = ("stt", "speakers", "brain", "tts")
-ACTION_LISTS = ("tools", "mcp", "actions")   # listes {engine, options} ; « actions » : ancien format
+LISTS = ("tools", "mcp")   # listes de {engine, options}
 
 
 def _yaml() -> YAML:
@@ -40,26 +37,15 @@ def dumps(doc: Any) -> str:
     return buf.getvalue()
 
 
-def load(path: str | Path) -> CommentedMap:
-    p = Path(path)
-    return loads(p.read_text(encoding="utf-8")) if p.exists() else CommentedMap()
-
-
 def to_text(doc: CommentedMap) -> str:
     """Texte YAML du document, sections normalisées remises sous leur forme courte."""
     doc = copy.deepcopy(doc)
     for key in STAGES:
         compact_stage(doc, key)
-    for key in ACTION_LISTS:
+    for key in LISTS:
         if isinstance(doc.get(key), CommentedSeq):
-            compact_actions(doc[key])
+            compact_list(doc[key])
     return dumps(doc)
-
-
-def save(doc: CommentedMap, path: str | Path) -> str:
-    text = to_text(doc)
-    write_atomic(path, text.encode("utf-8"))
-    return text
 
 
 def comment(container: Any, key: Any) -> str:
@@ -108,56 +94,22 @@ def stage(doc: CommentedMap, key: str) -> CommentedMap:
     return raw
 
 
-def action_entry(actions: CommentedSeq, index: int) -> CommentedMap:
-    """Action ``index`` sous forme ``{engine, options}`` (convertit ``- speak``)."""
-    item = actions[index]
+def entry(items: CommentedSeq, index: int) -> CommentedMap:
+    """Élément ``index`` d'une liste tools / mcp sous forme ``{engine, options}`` (convertit ``- speak``)."""
+    item = items[index]
     if not isinstance(item, CommentedMap):
         item = CommentedMap(engine=str(item))
-        actions[index] = item
+        items[index] = item
     if not isinstance(item.get("options"), CommentedMap):
         item["options"] = CommentedMap(item.get("options") or {})
     return item
 
 
-def split_actions(doc: CommentedMap, category_of: Any) -> bool:
-    """Répartit l'ancienne liste ``actions`` entre ``tools`` et ``mcp`` (``category_of(nom)``),
-    à la place de ``actions`` ; renvoie True si le document a changé."""
-    old = doc.get("actions")
-    if not isinstance(old, CommentedSeq):
-        return False
-    pos = list(doc).index("actions")
-    for key in ("tools", "mcp"):
-        if not isinstance(doc.get(key), CommentedSeq):
-            if key in doc:
-                del doc[key]
-            doc.insert(pos, key, CommentedSeq())
-            pos += 1
-    for item in old:
-        engine = item.get("engine") if isinstance(item, CommentedMap) else item
-        doc["mcp" if category_of(str(engine)) == "mcp" else "tools"].append(item)
-    del doc["actions"]
-    return True
-
-
-def drop_actions(actions: Any, names: Any) -> bool:
-    """Retire de la liste ``actions`` les entrées dont le moteur est dans ``names`` (outils
-    désormais fournis par un plugin) ; renvoie True si la liste a changé."""
-    if not isinstance(actions, CommentedSeq):
-        return False
-    drop = [i for i, item in enumerate(actions)
-            if str(item.get("engine") if isinstance(item, CommentedMap) else item) in names]
-    for i in reversed(drop):
-        del actions[i]
-    return bool(drop)
-
-
-def compact_actions(actions: CommentedSeq) -> None:
+def compact_list(items: CommentedSeq) -> None:
     """Réécrit ``{engine: x}`` sans options en ``- x`` pour garder le fichier lisible."""
-    for i, item in enumerate(actions):
-        if isinstance(item, CommentedMap):
-            opts = item.get("options")
-            if set(item) <= {"engine", "options"} and not opts:
-                actions[i] = item.get("engine", "")
+    for i, item in enumerate(items):
+        if isinstance(item, CommentedMap) and set(item) <= {"engine", "options"} and not item.get("options"):
+            items[i] = item.get("engine", "")
 
 
 def compact_stage(doc: CommentedMap, key: str) -> None:

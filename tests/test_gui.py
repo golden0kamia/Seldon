@@ -1,9 +1,10 @@
-"""Tests de l'interface (Qt hors écran) : découverte des plugins, aller-retour YAML, fenêtre."""
+"""Tests de l'interface (Qt hors écran) : options des plugins, aller-retour YAML, fenêtre."""
 
 from __future__ import annotations
 
 import os
-import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,17 +12,93 @@ import pytest
 pytest.importorskip("ruamel.yaml")
 
 from seldon.gui import configdoc  # noqa: E402
-from seldon.gui.plugins import choices_from_comment, discover  # noqa: E402
+from seldon.gui.plugins import choices_from_comment, class_info, discover  # noqa: E402
+from seldon.registry import PLUGINS  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 
+CONFIG = """\
+# Configuration de test (format de seldon/config.py)
+log_level: INFO
+confirm: console          # validation des actions sensibles : console | always | never
+memory:                   # conversations (outil « conversations »)
+  enabled: true
+  dir: data/conversations
+  new_after_idle_s: 600   # après 10 min de silence, nouvelle conversation
 
-def test_discover_reads_plugins_without_importing():
+stt:
+  engine: whisper
+  options:
+    model: small          # tiny / base / small / medium / large-v3
+    language: fr
+speakers:
+  engine: resemblyzer     # "none" pour désactiver
+  options:
+    voices_dir: data/voices
+brain:
+  engine: llamacpp        # serveur local `llama serve`
+  options:
+    base_url: http://127.0.0.1:9931/v1
+    model: null           # null = modèle chargé sur le serveur
+    vision: true          # true si le modèle lit les images (caméra)
+    thinking: false       # raisonnement du modèle : plus lent, parfois plus juste
+    max_steps: 10
+  # engine: claude
+  # options: {model: claude-opus-5-5, effort: low}
+tts:
+  engine: piper
+  options:
+    voice: fr_FR-tom-medium
+    speed: 1.15           # 1.0 = normal
+tools:                    # outils en Python (seldon/tools)
+  - speak
+  - engine: terminal
+    options:
+      timeout: 30
+mcp:
+  - engine: home_assistant   # domotique
+    options:
+      url: http://192.168.1.105:8123/api/mcp
+skills: []                # skills/<nom>/SKILL.md
+"""
+
+
+def test_discover_follows_the_registry():
     plugins = discover()
-    assert {"stt", "speakers", "brain", "tts", "tools", "mcp"} <= set(plugins)
+    assert set(plugins) == set(PLUGINS)
+    assert all(set(plugins[c]) == set(PLUGINS[c]) for c in PLUGINS)
+    assert plugins["tools"]["speak"].path == ROOT / "seldon" / "tools" / "speak.py"
     thinking = plugins["brain"]["llamacpp"].params["thinking"]
     assert thinking.default is False and "raisonnement" in thinking.comment
-    assert "claude_code" in plugins["tools"] and "nextcloud" in plugins["tools"] and "home_assistant" in plugins["mcp"]
+
+
+def test_discover_reads_inherited_options_without_importing(tmp_path):
+    pkg = tmp_path / "seldon"
+    pkg.mkdir()
+    (pkg / "serveurs.py").write_text(
+        '"""Module."""\nimport torch_absent\n\n'
+        'class Base:\n    """Serveur générique.\n\n    Détails."""\n\n'
+        '    def __init__(self, url: str = "http://x",   # adresse du serveur\n'
+        '                 timeout: int = 10) -> None: ...\n\n'
+        'class Domotique(Base):\n    pass\n\n'
+        'class Autre(Base):\n    """Le sien."""\n    def __init__(self, n=-1, s={[]}): ...\n', encoding="utf-8")
+    table = {"mcp": {"http": "seldon.serveurs:Base", "ha": "seldon.serveurs:Domotique",
+                     "autre": "seldon.serveurs:Autre", "absent": "seldon.absent:X", "externe": "ailleurs.mod:Y"}}
+    found = discover(pkg, table)["mcp"]
+    assert found["ha"].doc == "Serveur générique." and list(found["ha"].params) == ["url", "timeout"]
+    assert found["ha"].params["url"].comment == "adresse du serveur" and found["ha"].params["timeout"].default == 10
+    assert found["autre"].doc == "Le sien." and found["autre"].params["n"].default == -1
+    assert found["autre"].params["s"].default_src == "{[]}"
+    assert found["absent"].params == {} and not found["absent"].path.exists()
+    assert found["externe"].path is None
+
+
+def test_class_info_survives_odd_sources(tmp_path):
+    (tmp_path / "b.py").write_bytes(b"class Y: pass\n\0")   # octet nul : ValueError
+    (tmp_path / "c.py").write_text("class Z(\n", encoding="utf-8")
+    (tmp_path / "d.py").write_text("class A(B): pass\nclass B(A): pass\n", encoding="utf-8")   # cycle
+    for name, cls in (("b.py", "Y"), ("c.py", "Z"), ("d.py", "A"), ("absent.py", "X")):
+        assert class_info(tmp_path / name, cls) == ("", {})
 
 
 def test_choices_from_comment():
@@ -31,19 +108,36 @@ def test_choices_from_comment():
     assert choices_from_comment("rien à proposer") == []
 
 
-def test_config_roundtrip_keeps_comments():
-    text = (ROOT / "config.yaml").read_text(encoding="utf-8")
+@pytest.mark.parametrize("text", [CONFIG, None])
+def test_config_roundtrip_keeps_comments(text):
+    text = text or (ROOT / "config.yaml").read_text(encoding="utf-8")
     doc = configdoc.loads(text)
     for key in configdoc.STAGES:
-        configdoc.stage(doc, key)
-    for key in ("tools", "mcp"):
-        for i in range(len(doc[key])):
-            configdoc.action_entry(doc[key], i)
+        if key in doc:
+            configdoc.stage(doc, key)
+    for key in configdoc.LISTS:
+        for i in range(len(doc.get(key) or [])):
+            configdoc.entry(doc[key], i)
     assert configdoc.to_text(doc) == text
-    doc["brain"]["options"]["max_steps"] = 12
+
+
+def test_config_edit_keeps_comments():
+    doc = configdoc.loads(CONFIG)
+    configdoc.stage(doc, "brain")["options"]["max_steps"] = 12
     out = configdoc.to_text(doc)
     assert "max_steps: 12" in out and "# true si le modèle lit les images" in out
-    assert "model: null" in out
+    assert "model: null" in out and "# engine: claude" in out
+
+
+def test_gui_does_not_import_old_core():
+    code = ("import sys, seldon.gui.window, seldon.gui.__main__\n"
+            "old = sorted(m for m in sys.modules if m.split('.')[:2] in (['seldon', 'core'], ['seldon', 'stt'],"
+            " ['seldon', 'tts'], ['seldon', 'speakers'], ['seldon', 'cli'], ['seldon', 'actions']))\n"
+            "heavy = sorted(m for m in ('torch', 'cv2', 'faster_whisper', 'anthropic') if m in sys.modules)\n"
+            "assert not old and not heavy, (old, heavy)\n")
+    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen"}
+    run = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
 
 
 # --- fenêtre -----------------------------------------------------------------
@@ -69,7 +163,7 @@ def window(qapp, tmp_path, monkeypatch):
     QSettings("Seldon", "seldon-gui").clear()   # chaque test part d'une fenêtre neuve
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Discard)
     monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: pytest.fail(f"avertissement : {a[2]}"))
-    shutil.copy(ROOT / "config.yaml", tmp_path / "config.yaml")
+    (tmp_path / "config.yaml").write_text(CONFIG, encoding="utf-8")
     (tmp_path / "projet").mkdir()
     (tmp_path / "projet" / "main.py").write_text("print('bonjour')\n", encoding="utf-8")
     w = MainWindow(tmp_path / "config.yaml", tmp_path / "projet")
@@ -92,16 +186,16 @@ def test_settings_edit_and_save(window, tmp_path):
     assert s.save()
     text = (tmp_path / "config.yaml").read_text(encoding="utf-8")
     assert "thinking: true        # raisonnement du modèle" in text
-    assert "# engine: ollama" in text   # blocs commentés conservés
+    assert "# engine: claude" in text   # blocs commentés conservés
 
     backup.setChecked(True)
     assert s.save()
     from seldon.config import Config
     cfg = Config.load(tmp_path / "config.yaml")
-    assert cfg.brain.engine == "llamacpp" and cfg.brain_backup.engine == "openai"
+    assert cfg.brain.engine == "llamacpp" and cfg.backup.engine == "claude"
     backup.setChecked(False)
     assert s.save()
-    assert Config.load(tmp_path / "config.yaml").brain_backup is None
+    assert Config.load(tmp_path / "config.yaml").backup is None
 
 
 def test_editor_open_edit_save(window, tmp_path):
@@ -232,8 +326,9 @@ def test_speakers_and_memory_pages_list_records(window, tmp_path):
     convs.mkdir(parents=True)
     (voices / "Claire.npy").write_bytes(b"")
     (convs / "c1.json").write_text(json.dumps(dict(
-        id="c1", created=0, updated=60, brain="llamacpp", title="Lance les tests", speakers=["Claire"],
-        transcript=[{"role": "user", "text": "Lance les tests", "speaker": "Claire", "ts": 60}])), encoding="utf-8")
+        id="c1", created=0, updated=60, title="Lance les tests", speakers=["Claire"],
+        messages=[{"role": "user", "text": "Lance les tests", "speaker": "Claire", "time": 60},
+                  {"role": "assistant", "text": "C'est parti.", "time": 61}])), encoding="utf-8")
     s = window.settings
     speakers = s.findChild(SpeakersView)
     memory = s.findChild(ConversationsView)
@@ -241,10 +336,10 @@ def test_speakers_and_memory_pages_list_records(window, tmp_path):
         view.refresh()
     assert speakers.list.item(0).text() == "Claire"
     assert "Lance les tests" in speakers.detail.text()          # conversations de ce locuteur
-    assert memory.list.item(0).text().startswith("Lance les tests")
-    assert "Participants : Claire." in memory.detail.text()      # résumé par défaut
-    memory.modes[1].click()
-    assert "<b>Claire</b>" in memory.detail.text()               # transcription
+    assert memory.list.item(0).text().startswith("Lance les tests") and "2 msg" in memory.list.item(0).text()
+    detail = memory.detail.text()
+    assert "Participants : Claire." in detail                    # en-tête
+    assert "<b>Claire</b>" in detail and "<b>Seldon</b>" in detail and "C&#x27;est parti." in detail
     opened = []
     s.open_requested.connect(opened.append)
     memory.open_btn.click()
@@ -292,7 +387,7 @@ def test_layout_does_not_move_with_state_or_engine(window, qapp):
                             if isinstance(f := stage.form.grid.itemAt(i).widget(), QLineEdit))
     qapp.processEvents()
     ref = fields()
-    for engine in ("console", "pyttsx3", "piper"):   # options inconnues de certains moteurs : « ⚠ »
+    for engine in ("console", "inconnu", "piper"):   # options inconnues de certains moteurs : « ⚠ »
         stage.combo.setCurrentText(engine)
         qapp.processEvents()
         assert fields() == ref, engine
@@ -354,43 +449,6 @@ def test_logs_page_answers_confirmation_in_voice_mode(window, qapp, monkeypatch)
     assert "réponse oui" in r.log.toPlainText()
 
 
-def test_logs_page_mutes_microphone_with_signals(window, qapp, monkeypatch):
-    import os
-
-    if os.name != "posix":
-        pytest.skip("signaux POSIX")
-    from PySide6.QtCore import QDeadlineTimer
-
-    r = window.runner
-    script = ("import signal, sys, time\n"
-              "say = lambda m: print('2026 INFO seldon.stt.whisper: [micro]', m, flush=True)\n"
-              "signal.signal(signal.SIGUSR1, lambda *a: say('coupé'))\n"
-              "signal.signal(signal.SIGUSR2, lambda *a: (say('rétabli'), sys.exit(0)))\n"
-              "print('prêt', flush=True)\n"
-              "while True: time.sleep(0.01)\n")
-    monkeypatch.setattr(r, "arguments", lambda text: ["-c", script])
-    window.launch(text=False)
-    assert r.process.waitForStarted(5000)
-    assert not r.mic_btn.isHidden() and not r.mic_btn.isEnabled()   # pas encore de signaux en place
-    deadline = QDeadlineTimer(5000)
-
-    def wait(cond):
-        while not cond() and not deadline.hasExpired():
-            r.process.waitForReadyRead(50)
-            qapp.processEvents()
-        assert cond()
-
-    wait(lambda: r.ready)
-    assert r.mic_btn.isEnabled()
-    window.run_actions["mute"].trigger()               # F6
-    wait(lambda: "[micro] coupé" in r.log.toPlainText())
-    assert r.mic_btn.isChecked() and "coupé" in r.mic_btn.text()
-    r.mic_btn.click()
-    wait(lambda: not r.running)
-    assert "[micro] rétabli" in r.log.toPlainText()
-    assert not r.mic_btn.isChecked() and not r.mic_btn.isEnabled()
-
-
 def test_logs_page_restarts_in_same_mode(window, qapp, monkeypatch):
     from PySide6.QtCore import QDeadlineTimer
 
@@ -408,12 +466,12 @@ def test_logs_page_restarts_in_same_mode(window, qapp, monkeypatch):
             qapp.processEvents()
         assert cond()
 
-    wait(lambda: r.ready)
+    wait(lambda: r._pid != 0)
     first = r._pid
     modes.clear()
     r.restart_btn.click()
     assert r.stopping and not r.restart_btn.isEnabled() and "redémarrage" in r.command.text()
-    wait(lambda: r.ready and r._pid not in (0, first))   # arrêté (Ctrl+C) puis relancé
+    wait(lambda: r._pid not in (0, first))   # arrêté (SIGTERM) puis relancé
     assert r.running and r.text_mode and modes and all(modes)   # même mode : texte
     r._flush()
     assert "Seldon arrêté" in r.log.toPlainText()
@@ -423,18 +481,6 @@ def test_logs_page_restarts_in_same_mode(window, qapp, monkeypatch):
 
 
 # --- robustesse ----------------------------------------------------------------
-
-def test_plugin_scan_survives_odd_sources(tmp_path):
-    from seldon.gui.plugins import scan_file
-
-    (tmp_path / "a.py").write_text('@register("tts", "x")\nclass X:\n    def __init__(self, s={[]}, n=-1): ...\n',
-                                   encoding="utf-8")
-    (tmp_path / "b.py").write_bytes(b'@register("tts", "y")\nclass Y: pass\n\0')   # octet nul : ValueError
-    (tmp_path / "c.py").write_text("@register(\n", encoding="utf-8")
-    [info] = scan_file(tmp_path / "a.py")
-    assert info.params["s"].default_src == "{[]}" and info.params["n"].default == -1
-    assert scan_file(tmp_path / "b.py") == [] and scan_file(tmp_path / "c.py") == []
-
 
 def test_voice_samples_rejects_malformed_headers(tmp_path):
     from seldon.gui.records import voice_samples
@@ -548,17 +594,18 @@ def test_conversation_records_are_cached_and_robust(tmp_path, qapp):
 
     from seldon.gui import records
 
-    (tmp_path / "c1.json").write_text(json.dumps(dict(created=0, updated="hier", brain="x")), encoding="utf-8")
+    (tmp_path / "c1.json").write_text(json.dumps(dict(created=0, updated="hier")), encoding="utf-8")
     (tmp_path / "c2.json").write_text(json.dumps(dict(
-        id="../../secret", created=0, updated=0, brain="x", title="Bizarre", inconnu=1,
-        transcript=[{"role": "user", "text": "sans date"}])), encoding="utf-8")
+        id="../../secret", created=0, updated=0, title="Bizarre <b>", inconnu=1,
+        messages=[{"role": "user", "text": "sans date"}, {"role": "summary", "text": "ancien format"}, "x"])),
+        encoding="utf-8")
     (tmp_path / "c3.json").write_bytes(b"\xff\xfe pas du JSON")
     first = records.conversations(tmp_path)
     assert records.conversations(tmp_path) is first          # rien n'a changé : pas de relecture
     view = records.ConversationsView(lambda: tmp_path)
     assert view.list.count() == 1                              # c1 (date invalide) et c3 ignorés, sans exception
-    view.modes[1].click()
-    assert "sans date" in view.detail.text()
+    detail = view.detail.text()
+    assert "sans date" in detail and "ancien format" not in detail and "Bizarre &lt;b&gt;" in detail
     opened = []
     view.open_requested.connect(opened.append)
     view.open_btn.click()
@@ -573,7 +620,7 @@ def test_conversation_delete_asks_confirmation(tmp_path, qapp, monkeypatch):
     from seldon.gui import records
 
     for name in ("a", "b"):
-        (tmp_path / f"{name}.json").write_text(json.dumps(dict(created=0, updated=0, brain="x", title=name)),
+        (tmp_path / f"{name}.json").write_text(json.dumps(dict(created=0, updated=0, title=name)),
                                                encoding="utf-8")
     view = records.ConversationsView(lambda: tmp_path)
     assert view.list.count() == 2 and view.delete_btn.isEnabled()
@@ -624,7 +671,7 @@ def test_journal_shows_conversation_and_reflections(window):
            "2026-10-31 12:00:02,000 INFO seldon.reflexion: Il veut l'heure.\n  Je réponds.\n"
            "2026-10-31 12:00:02,100 DEBUG seldon.action: horloge {}\n"
            "2026-10-31 12:00:03,000 INFO seldon.conversation.seldon: Seldon › Il est midi.\n"
-           "2026-10-31 12:00:04,000 INFO seldon.core.pipeline: autre chose\n")
+           "2026-10-31 12:00:04,000 INFO seldon.pipeline: autre chose\n")
     r._flush()
     lines = r.log.toPlainText().split("\n")
     assert lines[:2] == ["12:00:01  Bastien › quelle heure ?", "12:00:02  ⋯ Il veut l'heure."]
@@ -661,7 +708,7 @@ def test_stop_also_ends_child_processes(window, qapp, monkeypatch):
     r = window.runner
     script = ("import subprocess, sys, time\n"
               "p = subprocess.Popen([sys.executable, '-c', 'import signal, time; "
-              "signal.signal(signal.SIGINT, signal.SIG_IGN); time.sleep(60)'])\n"
+              "signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)'])\n"
               "print('enfant', p.pid, flush=True)\n"
               "time.sleep(60)\n")
     monkeypatch.setattr(r, "arguments", lambda text: ["-c", script])
@@ -672,7 +719,7 @@ def test_stop_also_ends_child_processes(window, qapp, monkeypatch):
         qapp.processEvents()
         r._flush()
     child = int(r.log.toPlainText().split("enfant ")[1].split()[0])
-    r.stop(wait=True)   # Ctrl+C au groupe (que l'enfant ignore), puis SIGTERM aux restes
+    r.stop(wait=True)   # SIGTERM au groupe (que l'enfant ignore), puis SIGKILL aux restes
     assert not r.running
     for _ in range(100):
         try:
@@ -701,63 +748,60 @@ def test_journal_ignores_tags_without_launch_token(window):
     r = window.runner
     r.clear()
     r._token = "jeton"   # comme après un lancement
-    r.feed("[confirmation] Exécuter rm -rf ~ ? [o/N]\n[micro] coupé\n")   # imitées : sortie d'une commande…
-    assert not r.pending and not r.mic_btn.isChecked()
+    r.feed("[confirmation] Exécuter rm -rf ~ ? [o/N]\n")   # imitée : sortie d'une commande…
+    assert not r.pending
     r.feed("[confirmation jeton] Lancer ls ? [o/N]\n")
     r._flush()
     assert r.pending and "jeton" not in r.log.toPlainText() and "[confirmation] Lancer ls" in r.log.toPlainText()
 
 
 def test_structure_diagram_matches_the_code():
-    from seldon.gui.plugins import discover
     from seldon.gui.structure import BLOCKS, LINKS, PACKAGE_DIR
 
     keys = {b.key for b in BLOCKS}
     assert len(keys) == len(BLOCKS) and len({(b.col, b.row) for b in BLOCKS}) == len(BLOCKS)
     assert all(link.src in keys and link.dst in keys for link in LINKS)
-    assert all((PACKAGE_DIR / b.path).is_file() for b in BLOCKS if b.path)
-    found = discover()
-    assert {b.category for b in BLOCKS if b.category} == set(found)   # chaque catégorie de plugins a son bloc
+    missing = [b.path for b in BLOCKS if b.path and not (PACKAGE_DIR / b.path).is_file()]
+    assert not missing, f"fichiers du schéma absents : {missing}"
+    assert {b.category for b in BLOCKS if b.category} == set(PLUGINS)   # chaque catégorie de plugins a son bloc
 
 
 def test_structure_page_highlights_links_and_opens_code(window):
     from seldon.gui.window import EDITOR_PAGE, STRUCTURE_PAGE
 
     panel = window.structure
-    assert not panel.loaded   # moteurs lus seulement à l'affichage
     window.show_page(STRUCTURE_PAGE)
     view = panel.view
     assert window.masthead.mode_buttons[STRUCTURE_PAGE].isChecked()
-    assert "whisper" in view.blocks["stt"].engines
+    assert "whisper" in view.blocks["stt"].engines and "keyboard" in view.blocks["stt"].engines
 
     panel.select("brain")
     assert view.blocks["brain"].state == "sel" and view.blocks["pipeline"].state == "near"
     assert view.blocks["mic"].state == "dim" and "Cerveau" in panel.detail.text()
     panel._open("pipeline")
     assert window.pages.currentIndex() == EDITOR_PAGE
-    assert window.editors.current().path == panel.root / "core" / "pipeline.py"
+    assert window.editors.current().path == panel.root / "pipeline.py"
 
 
 def test_brain_form_follows_engine_and_keeps_keys_out_of_config(window, tmp_path):
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QLabel, QLineEdit, QToolButton
+
     from seldon.gui.brainform import BrainEditor, read_env
 
     s = window.settings
     brain = s.pages.widget(4).findChild(BrainEditor)
     brain._set("max_steps", 7)
-    brain._engine_changed("openai")
-    assert brain.engine == "openai" and "max_steps" not in brain.options   # options mises de côté
-    from PySide6.QtCore import QCoreApplication, QEvent
-    from PySide6.QtWidgets import QLabel, QToolButton
+    brain._engine_changed("claude")
+    assert brain.engine == "claude" and "max_steps" not in brain.options   # options mises de côté
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)   # formulaire llamacpp détruit
     labels = {l.text() for l in brain.findChildren(QLabel)}
-    assert "reasoning_effort" in labels and "thinking" not in labels
+    assert "effort" in labels and "thinking" not in labels
     assert not any(b.text() == "✕" for b in brain.findChildren(QToolButton))   # pas de « valeur par défaut »
     brain._engine_changed("llamacpp")
     assert brain.options["max_steps"] == 7                                  # retrouvées au retour
 
     brain._engine_changed("claude")
-    from PySide6.QtCore import QCoreApplication, QEvent
-    from PySide6.QtWidgets import QLineEdit
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)   # formulaires précédents détruits
     key = next(f for f in brain.findChildren(QLineEdit) if f.accessibleName() == "Clé API")
     key.setText("sk-ant-test")
@@ -768,11 +812,13 @@ def test_brain_form_follows_engine_and_keeps_keys_out_of_config(window, tmp_path
 
 
 def test_brain_backup_form_matches_primary_for_same_engine(window, tmp_path):
+    from PySide6.QtCore import QCoreApplication, QEvent
     from PySide6.QtWidgets import QComboBox, QLabel
+
     from seldon.gui.brainform import BackupEditor, BrainEditor
 
     doc = configdoc.loads("brain:\n  engine: llamacpp   # serveur local\n  options:\n"
-                          "    auth: abonnement   # api (au token) | abonnement (compte)\n"
+                          "    auth: abonnement   # commentaire propre à config.yaml\n"
                           "  backup:\n    engine: claude\n    options: {auth: abonnement}\n")
     node = configdoc.stage(doc, "brain")
     brains = discover()["brain"]
@@ -780,10 +826,8 @@ def test_brain_backup_form_matches_primary_for_same_engine(window, tmp_path):
     primary._engine_changed("claude")
     node["options"]["auth"] = "abonnement"   # même réglage, commentaire de config.yaml conservé
     primary.rebuild()
-    backup_box = BackupEditor(node, brains, lambda: None, tmp_path / ".env")
+    backup_box = BackupEditor(node, brains, lambda: None, tmp_path / ".env")   # gardé : sinon détruit
     backup = backup_box.editor
-
-    from PySide6.QtCore import QCoreApplication, QEvent
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)   # formulaires précédents détruits
 
     def form(editor: BrainEditor) -> tuple[list[str], list[list[str]]]:
@@ -799,7 +843,7 @@ def test_brain_backup_form_matches_primary_for_same_engine(window, tmp_path):
 def test_brain_list_models_with_account(monkeypatch, tmp_path):
     from seldon.gui import brainform
 
-    monkeypatch.setattr(brainform, "account_status", lambda _bin: "moi@example.org")
+    monkeypatch.setattr(brainform, "account_status", lambda: "moi@example.org")
     models = brainform.list_models("claude", {"auth": "abonnement"}, {}, tmp_path / ".env")
     assert models == brainform.ACCOUNT_MODELS
     with pytest.raises(ValueError, match="clé API Anthropic absente"):
@@ -807,16 +851,40 @@ def test_brain_list_models_with_account(monkeypatch, tmp_path):
         brainform.list_models("claude", {"auth": "api"}, {}, tmp_path / ".env")
 
 
-def test_old_actions_list_is_split_into_tools_and_mcp():
-    from seldon.config import Config
-    from seldon.core import registry
+def test_llamacpp_key_comes_from_named_env_variable(monkeypatch, tmp_path):
+    from seldon.gui import brainform
 
-    doc = configdoc.loads("brain: claude\nactions:\n  - speak   # parle\n  - engine: home_assistant\n"
-                          "    options: {url: http://x/mcp}\nlog_level: INFO\n")
-    assert configdoc.split_actions(doc, registry.category_of) and not configdoc.split_actions(doc, registry.category_of)
-    assert list(doc) == ["brain", "tools", "mcp", "log_level"]
-    cfg = Config.parse(configdoc.to_text(doc))
-    assert [t.engine for t in cfg.tools] == ["speak"] and [m.engine for m in cfg.mcp] == ["home_assistant"]
+    env = tmp_path / ".env"
+    env.write_text("LLAMA_KEY=secret\n", encoding="utf-8")
+    monkeypatch.delenv("LLAMA_KEY", raising=False)
+    assert brainform.api_key("llamacpp", {"api_key_env": "LLAMA_KEY"}, env) == "secret"
+    assert brainform.api_key("llamacpp", {}, env) is None
+
+
+def test_settings_flag_removed_options_and_disable_speakers(window):
+    from PySide6.QtWidgets import QLabel
+
+    from seldon.gui.settings import OptionsForm, StageEditor
+
+    s = window.settings
+    s.doc["commands"] = True                     # options supprimées du format : signalées « ⚠ »
+    s.doc["memory"]["greet_after_s"] = 21600
+    s._changed()
+    s.reload()
+    s.doc["commands"] = True
+    s.doc["memory"]["greet_after_s"] = 21600
+    general = s.pages.widget(0).findChild(OptionsForm)
+    memory = s.pages.widget(1).findChild(OptionsForm)
+    general.rebuild()
+    memory.rebuild()
+    texts = lambda w: {l.text() for l in w.findChildren(QLabel)}
+    assert "commands ⚠" in texts(general) and "confirm" in texts(general) and "log_level" in texts(general)
+    assert "greet_after_s ⚠" in texts(memory) and "new_after_idle_s" in texts(memory)
+
+    stage = s.pages.widget(3).findChild(StageEditor)   # Locuteurs
+    assert stage.combo.findText("none") >= 0
+    stage.combo.setCurrentText("none")
+    assert s.doc["speakers"]["engine"] == "none" and stage.doc.text().startswith("Désactivé")
 
 
 def test_skills_page_creates_enables_and_opens_a_skill(window, tmp_path):
@@ -833,14 +901,25 @@ def test_skills_page_creates_enables_and_opens_a_skill(window, tmp_path):
     assert Config.load(tmp_path / "config.yaml").skills[-1] == "courses"
 
 
+def test_skill_description_from_front_matter(tmp_path):
+    from seldon.gui.settings import skill_description
+
+    good, bad = tmp_path / "a.md", tmp_path / "b.md"
+    good.write_text("---\nname: a\ndescription: Quand on demande\n  le bilan.\n---\nConsignes\n", encoding="utf-8")
+    bad.write_text("Pas d'en-tête\n", encoding="utf-8")
+    assert skill_description(good) == "Quand on demande le bilan."
+    with pytest.raises(ValueError, match="description manquante"):
+        skill_description(bad)
+
+
 def test_tools_and_mcp_pages_open_plugin_code(window):
     from PySide6.QtWidgets import QToolButton
 
-    from seldon.gui.settings import ActionsPage, OptionsForm
+    from seldon.gui.settings import OptionsForm, PluginList
     from seldon.gui.window import EDITOR_PAGE
 
     s = window.settings
-    page = s.pages.widget(6).findChild(ActionsPage)   # …, Tools, MCP, Skills
+    page = s.pages.widget(6).findChild(PluginList)   # …, Tools, MCP, Skills
     edit = next(b for b in page.findChildren(QToolButton) if b.accessibleName() == "Ouvrir le code : speak")
     edit.click()
     assert window.pages.currentIndex() == EDITOR_PAGE

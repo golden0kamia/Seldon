@@ -2,7 +2,8 @@
 
 Chaque champ modifie directement le document ``ruamel`` (commentaires conservés) ;
 « Enregistrer » le réécrit. Les moteurs proposés et leurs options viennent de
-``plugins.discover()`` : un nouveau plugin apparaît sans toucher à l'interface.
+``plugins.discover()`` (le registre ``seldon.registry.PLUGINS``) : un nouveau
+plugin apparaît sans toucher à l'interface.
 """
 
 from __future__ import annotations
@@ -17,20 +18,20 @@ from PySide6.QtWidgets import (
     QListWidget, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QStackedWidget,
     QToolButton, QVBoxLayout, QWidget,
 )
+import yaml
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
-from seldon.config import Config
-from seldon.skills import base as skills
-from seldon.core import registry
-from seldon.core.errors import describe
+from seldon.config import CONFIRM_MODES, Config
+from seldon.errors import describe
 from seldon.gui import configdoc, theme
 from seldon.gui.brainform import BackupEditor, BrainEditor
 from seldon.gui.fsutil import write_atomic
-from seldon.gui.plugins import Param, PluginInfo, choices_from_comment, class_params, discover
+from seldon.gui.plugins import PACKAGE, Param, PluginInfo, choices_from_comment, class_info, discover
 from seldon.gui.records import ConversationsView, RecordsView, SpeakersView
 from seldon.gui.widgets import FIXED_CHOICES, guard_wheel, hint_label, make_editor  # noqa: F401 (réexportés)
 
-PACKAGE = Path(__file__).resolve().parent.parent
+SKILLS_DIR = "skills"   # skills/<nom>/SKILL.md, à côté de config.yaml
+SKILL_FILE = "SKILL.md"
 SKILL_NAME = re.compile(r"[a-z0-9][a-z0-9_-]*")
 SKILL_TEMPLATE = """---
 name: {name}
@@ -45,6 +46,23 @@ SECTIONS = [  # (clé, titre, catégorie de plugins)
     ("brain", "Cerveau", "brain"),
     ("tts", "Voix (TTS)", "tts"),
 ]
+NO_SPEAKERS = "none"   # speakers: none : pas d'identification des voix (ni d'outil « voix »)
+GENERAL = {   # options globales (hors sections), toutes facultatives
+    "log_level": Param("log_level", "INFO", '"INFO"', "str", "DEBUG | INFO | WARNING | ERROR"),
+    "confirm": Param("confirm", "console", '"console"', "str",
+                     "validation des actions sensibles : " + " | ".join(CONFIRM_MODES)),
+}
+
+
+def skill_description(file: Path) -> str:
+    """Description d'un ``SKILL.md`` (en-tête YAML entre deux lignes ``---``) ; ValueError si absente."""
+    lines = file.read_text(encoding="utf-8").splitlines()
+    end = next((i for i, line in enumerate(lines[1:], 1) if line.strip() == "---"), None)
+    meta = yaml.safe_load("\n".join(lines[1:end])) if lines and lines[0].strip() == "---" and end else None
+    description = " ".join(str(meta.get("description") or "").split()) if isinstance(meta, dict) else ""
+    if not description:
+        raise ValueError(f"{file.name} : description manquante (en-tête « description: »)")
+    return description
 
 class OptionsForm(QWidget):
     """Formulaire clé → valeur sur un ``CommentedMap`` (modifié en place)."""
@@ -52,11 +70,10 @@ class OptionsForm(QWidget):
     WARNING = "⚠"
 
     def __init__(self, mapping: CommentedMap, known: dict[str, Param], on_change: Callable[[], None],
-                 keys: Callable[[str], bool] | None = None, extensible: bool = True) -> None:
+                 keys: Callable[[str], bool] | None = None) -> None:
         super().__init__()
         self.mapping, self.known, self.on_change = mapping, known, on_change
         self.keys = keys or (lambda _k: True)
-        self.extensible = extensible
         self.grid = QGridLayout(self)
         self.grid.setContentsMargins(0, 0, 0, 0)
         self.grid.setHorizontalSpacing(theme.PAD)
@@ -76,7 +93,7 @@ class OptionsForm(QWidget):
                 item.widget().deleteLater()
         row = 0
         for key in list(self.mapping):
-            if not self.keys(str(key)) or isinstance(self.mapping[key], CommentedMap) and not self.extensible:
+            if not self.keys(str(key)):
                 continue
             self._add_row(row, str(key))
             row += 1
@@ -97,12 +114,12 @@ class OptionsForm(QWidget):
             choices = []   # le commentaire ne décrivait pas des valeurs possibles
         label = QLabel(key)
         label.setFont(theme.mono_font(10))
-        if self.extensible:   # place du « ⚠ » réservée : changer de moteur ne décale pas les champs
-            label.setMinimumWidth(label.fontMetrics().horizontalAdvance(f"{key} {self.WARNING}"))
+        # place du « ⚠ » réservée : changer de moteur ne décale pas les champs
+        label.setMinimumWidth(label.fontMetrics().horizontalAdvance(f"{key} {self.WARNING}"))
         tips = [param.hint()] if param else []
-        if self.known and param is None and self.extensible:
+        if self.known and param is None:
             label.setText(f"{key} {self.WARNING}")
-            tips.append("Option inconnue pour ce moteur (ignorée ou erreur au démarrage).")
+            tips.append("Option inconnue (ignorée ou erreur au démarrage).")
         label.setToolTip("\n".join(t for t in tips if t))
         editor = make_editor(value, choices, lambda v, k=key: self._set(k, v))
         editor.setToolTip(label.toolTip() or editor.toolTip())
@@ -111,10 +128,10 @@ class OptionsForm(QWidget):
         self.grid.addWidget(hint_label(hint), row, 2)
 
 
-def _engine_combo(plugins: dict[str, PluginInfo], current: str) -> QComboBox:
+def _engine_combo(plugins: dict[str, PluginInfo], current: str, extra: tuple[str, ...] = ()) -> QComboBox:
     combo = guard_wheel(QComboBox(editable=True))
     combo.setAccessibleName("Moteur")
-    names = sorted(plugins)
+    names = [*extra, *sorted(plugins)]
     combo.addItems(names if current in names else [current, *names])
     for i in range(combo.count()):
         info = plugins.get(combo.itemText(i))
@@ -129,16 +146,16 @@ class StageEditor(QWidget):
     """Moteur + options d'un étage (``{engine, options}``).
 
     ``choose=False`` : moteur fixe, sans sélecteur (tools et serveurs MCP, où le
-    moteur est l'élément lui-même).
+    moteur est l'élément lui-même). ``off`` : nom qui désactive l'étage (``none``).
     """
 
     def __init__(self, node: CommentedMap, plugins: dict[str, PluginInfo], on_change: Callable[[], None],
-                 reserve: bool = True, choose: bool = True) -> None:
+                 reserve: bool = True, choose: bool = True, off: str = "") -> None:
         super().__init__()
-        self.node, self.plugins, self.on_change = node, plugins, on_change
+        self.node, self.plugins, self.on_change, self.off = node, plugins, on_change, off
         self.reserve = reserve   # hauteur de la plus longue description : les champs restent en place
         engine = str(node.get("engine", ""))
-        self.combo = _engine_combo(plugins, engine)
+        self.combo = _engine_combo(plugins, engine, (off,) if off else ())
         self.doc = hint_label("")
         self.form = OptionsForm(node["options"], self._known(engine), on_change)
         lay = QVBoxLayout(self)
@@ -163,7 +180,12 @@ class StageEditor(QWidget):
 
     def _show_doc(self, engine: str) -> None:
         info = self.plugins.get(engine)
-        text = info.doc if info else ("Plugin externe" if ":" in engine else "Plugin inconnu")
+        if info:
+            text = info.doc
+        elif engine == self.off and engine:
+            text = "Désactivé."
+        else:
+            text = "Plugin externe" if ":" in engine else "Plugin inconnu"
         self.doc.setText(self._doc_text(text))
         if not self.reserve:
             self.doc.setVisible(bool(self.doc.text()))   # pas de ligne vide (et d'écart en trop) sans description
@@ -190,15 +212,25 @@ class StageEditor(QWidget):
         self.on_change()
 
 
-class ActionsPage(QWidget):
+def _clear(layout: QVBoxLayout) -> None:
+    """Retire et détruit les widgets d'un layout (et de ses sous-layouts directs)."""
+    while layout.count():
+        item = layout.takeAt(0)
+        if item.widget():
+            item.widget().deleteLater()
+        elif item.layout():
+            _clear(item.layout())
+
+
+class PluginList(QWidget):
     """Liste de tools ou de serveurs MCP (``{engine, options}``), avec leurs options et un bouton pour éditer leur code."""
 
     open_requested = Signal(Path)
 
-    def __init__(self, actions: CommentedSeq, plugins: dict[str, PluginInfo], on_change: Callable[[], None],
-                 hint: str = "", noun: str = "l'action") -> None:
+    def __init__(self, items: CommentedSeq, plugins: dict[str, PluginInfo], on_change: Callable[[], None],
+                 hint: str = "", noun: str = "le tool") -> None:
         super().__init__()
-        self.actions, self.plugins, self.on_change = actions, plugins, on_change
+        self.items, self.plugins, self.on_change = items, plugins, on_change
         self.hint, self.noun = hint, noun
         self.lay = QVBoxLayout(self)
         self.lay.setContentsMargins(0, 0, 0, 0)
@@ -206,18 +238,10 @@ class ActionsPage(QWidget):
         self.rebuild()
 
     def rebuild(self) -> None:
-        while self.lay.count():
-            item = self.lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-            elif item.layout():
-                while item.layout().count():
-                    sub = item.layout().takeAt(0)
-                    if sub.widget():
-                        sub.widget().deleteLater()
+        _clear(self.lay)
         self.lay.addWidget(hint_label(self.hint))
-        for i in range(len(self.actions)):
-            node = configdoc.action_entry(self.actions, i)
+        for i in range(len(self.items)):
+            node = configdoc.entry(self.items, i)
             box = theme.NeuCard("inset", radius=16)
             v = box.body
             tools = QHBoxLayout()
@@ -226,7 +250,7 @@ class ActionsPage(QWidget):
             title.setFont(theme.label_font(10.5))
             tools.addWidget(theme.Led(10))
             tools.addWidget(title)
-            if note := configdoc.comment(self.actions, i):
+            if note := configdoc.comment(self.items, i):
                 tools.addWidget(hint_label(note), 1)
             else:
                 tools.addStretch(1)
@@ -238,16 +262,16 @@ class ActionsPage(QWidget):
                 b.clicked.connect(slot)
                 tools.addWidget(b)
             info = self.plugins.get(str(node.get("engine", "")))
-            file = info.path if info else None
+            file = info.path if info and info.path and info.path.is_file() else None
             edit = QToolButton(text="✎", toolTip=f"Ouvrir {file.name}" if file else "Code introuvable",
-                               autoRaise=True, enabled=bool(file and file.is_file()))
+                               autoRaise=True, enabled=file is not None)
             edit.setAccessibleName(f"Ouvrir le code : {node.get('engine', '')}")
             edit.clicked.connect(lambda _=False, f=file: self.open_requested.emit(f))
             tools.insertWidget(tools.count() - 1, edit)   # avant « Retirer », comme pour les skills
             v.addLayout(tools)
             v.addWidget(StageEditor(node, self.plugins, self.on_change, reserve=False, choose=False))
             self.lay.addWidget(box)
-        used = {str(self.actions[i].get("engine")) for i in range(len(self.actions))}
+        used = {str(self.items[i].get("engine")) for i in range(len(self.items))}
         add_box = guard_wheel(QComboBox(editable=True))
         add_box.setAccessibleName(f"Ajouter {self.noun}")
         add_box.addItems([n for n in sorted(self.plugins) if n not in used])
@@ -266,19 +290,19 @@ class ActionsPage(QWidget):
     def _add(self, name: str) -> None:
         if not name:
             return
-        self.actions.append(name)
+        self.items.append(name)
         self.on_change()
         self.rebuild()
 
     def _remove(self, i: int) -> None:
-        del self.actions[i]
+        del self.items[i]
         self.on_change()
         self.rebuild()
 
     def _move(self, i: int, delta: int) -> None:
         j = i + delta
-        if 0 <= j < len(self.actions):
-            self.actions[i], self.actions[j] = self.actions[j], self.actions[i]
+        if 0 <= j < len(self.items):
+            self.items[i], self.items[j] = self.items[j], self.items[i]
             self.on_change()
             self.rebuild()
 
@@ -300,31 +324,32 @@ class SkillsPage(QWidget):
         value = self.doc.get("skills")
         return [str(v) for v in value] if isinstance(value, list) else []
 
+    def available(self) -> list[str]:
+        """Noms des dossiers qui contiennent un ``SKILL.md``."""
+        try:
+            return sorted(p.parent.name for p in self.folder.glob(f"*/{SKILL_FILE}") if p.is_file())
+        except OSError:
+            return []
+
     def rebuild(self) -> None:
-        while self.lay.count():
-            item = self.lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-            elif item.layout():
-                while item.layout().count():
-                    sub = item.layout().takeAt(0)
-                    if sub.widget():
-                        sub.widget().deleteLater()
+        _clear(self.lay)
         self.lay.addWidget(hint_label(f"Dossiers {self.folder.name}/<nom>/SKILL.md : la description dit au "
                                       "cerveau quand charger les consignes, qu'il suit avec les tools et MCP."))
         enabled = self._enabled()
-        for name in sorted(set(skills.available(self.folder)) | set(enabled)):
+        for name in sorted(set(self.available()) | set(enabled)):
             row = QHBoxLayout()
             row.setSpacing(theme.SPACE)
             box = QCheckBox(name, checked=name in enabled)
             box.toggled.connect(lambda on, n=name: self._toggle(n, on))
             row.addWidget(box)
+            file = self.folder / name / SKILL_FILE
             try:
-                about = skills.load(name, self.folder).description
+                about = skill_description(file)
+            except FileNotFoundError:
+                about = f"{OptionsForm.WARNING} {SKILLS_DIR}/{name}/{SKILL_FILE} introuvable"
             except Exception as e:  # noqa: BLE001 — message montré tel quel
                 about = f"{OptionsForm.WARNING} {describe(e)}"
             row.addWidget(hint_label(about), 1)
-            file = skills.skill_dir(name, self.folder) / skills.SKILL_FILE
             edit = QToolButton(text="✎", toolTip=f"Ouvrir {file.name}", autoRaise=True, enabled=file.is_file())
             edit.setAccessibleName(f"Ouvrir le skill {name}")
             edit.clicked.connect(lambda _=False, f=file: self.open_requested.emit(f))
@@ -357,7 +382,7 @@ class SkillsPage(QWidget):
         if not SKILL_NAME.fullmatch(name):
             QMessageBox.warning(self, "Nouveau skill", "Nom attendu : lettres minuscules, chiffres et tirets.")
             return None
-        file = self.folder / name / skills.SKILL_FILE
+        file = self.folder / name / SKILL_FILE
         if not file.exists():
             file.parent.mkdir(parents=True, exist_ok=True)
             write_atomic(file, SKILL_TEMPLATE.format(name=name).encode("utf-8"))
@@ -365,6 +390,15 @@ class SkillsPage(QWidget):
         self.rebuild()
         self.open_requested.emit(file)
         return file
+
+
+def yaml_error(e: Exception) -> str:
+    """Erreur de lecture YAML en français, avec sa ligne et sa colonne."""
+    mark = getattr(e, "problem_mark", None)
+    if mark is None:
+        return str(e)
+    problem = getattr(e, "problem", None) or ""
+    return f"YAML invalide ligne {mark.line + 1}, colonne {mark.column + 1}" + (f" ({problem})" if problem else "")
 
 
 def validate(text: str) -> str | None:
@@ -385,10 +419,9 @@ class SettingsPanel(QWidget):
     def __init__(self, config_path: Path, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.path = config_path.resolve()
-        self.plugins = discover(PACKAGE)
-        self.memory_params = class_params(PACKAGE / "core" / "memory.py", "ConversationMemory")
+        self.plugins = discover()
+        _doc, self.memory_params = class_info(PACKAGE / "brain" / "memory.py", "Memory")
         self.memory_params.pop("brain", None)
-        self.memory_params.pop("brain_kind", None)
         self.doc = CommentedMap()
         self.disk_text = ""
         self.dirty = False
@@ -483,7 +516,7 @@ class SettingsPanel(QWidget):
             self.doc = configdoc.loads(text)
         except Exception as e:  # noqa: BLE001 — YAML invalide : on le dit et on propose l'éditeur
             self.doc = None
-            error = (validate(text) if text else None) or str(e)   # message en français, avec ligne et colonne
+            error = yaml_error(e)
             self.banner.setText(f"{self.path.name} est illisible, le formulaire est indisponible.\n{error}\n"
                                 "Corrigez-le dans l'éditeur (« Ouvrir le YAML ») : il sera relu dès son enregistrement.")
             self.banner.show()
@@ -509,9 +542,8 @@ class SettingsPanel(QWidget):
             self.reloaded.emit()
             return
 
-        reserved = {k for k, _t, _c in SECTIONS} | {"tools", "mcp", "skills", "actions", "memory"}
-        general = OptionsForm(self.doc, {}, self._changed,
-                              keys=lambda k: k not in reserved, extensible=False)
+        reserved = {k for k, _t, _c in SECTIONS} | {"tools", "mcp", "skills", "memory"}
+        general = OptionsForm(self.doc, GENERAL, self._changed, keys=lambda k: k not in reserved)
         self._page("Général", general, "Réglages globaux de l'assistant.")
         memory = self.doc.get("memory")
         if not isinstance(memory, CommentedMap):
@@ -527,11 +559,9 @@ class SettingsPanel(QWidget):
                 extra = (BackupEditor(node, self.plugins.get(cat, {}), self._changed, env),)
                 editor = BrainEditor(node, self.plugins.get(cat, {}), self._changed, env)
             else:
-                editor = StageEditor(node, self.plugins.get(cat, {}), self._changed)
+                editor = StageEditor(node, self.plugins.get(cat, {}), self._changed,
+                                     off=NO_SPEAKERS if key == "speakers" else "")
             self._page(title, editor, extra=extra)
-        migrated = configdoc.split_actions(self.doc, registry.category_of)   # ancien format « actions: »
-        # conversations et voix : outils de la mémoire et des locuteurs, plus des tools à activer
-        migrated = configdoc.drop_actions(self.doc.get("tools"), registry.PLUGIN_TOOLS) or migrated
         for key, title, intro, noun, default in (
                 ("tools", "Tools", "Actions en Python que le cerveau peut appeler. L'ordre n'a pas d'importance.",
                  "le tool", ["speak"]),
@@ -539,14 +569,14 @@ class SettingsPanel(QWidget):
             seq = self.doc.get(key)
             if not isinstance(seq, CommentedSeq):
                 seq = self.doc[key] = CommentedSeq(seq or default)
-            page = ActionsPage(seq, self.plugins.get(key, {}), self._changed, intro, noun)
+            page = PluginList(seq, self.plugins.get(key, {}), self._changed, intro, noun)
             page.open_requested.connect(self.open_requested.emit)
             self._page(title, page)
-        skill_page = SkillsPage(self.doc, self._data_dir(None, skills.SKILLS_DIR), self._changed)
+        skill_page = SkillsPage(self.doc, self.path.parent / SKILLS_DIR, self._changed)
         skill_page.open_requested.connect(self.open_requested.emit)
         self._page("Skills", skill_page)
         self.nav.setCurrentRow(min(row, self.nav.count() - 1))
-        self._set_dirty(migrated)   # à enregistrer pour adopter tools / mcp
+        self._set_dirty(False)
         self.reloaded.emit()
 
     def _records(self, view: RecordsView) -> RecordsView:

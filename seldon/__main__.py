@@ -5,46 +5,37 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import signal
 import sys
 from pathlib import Path
 
-from seldon.config import Config, StageConfig, load_secrets
-from seldon.core import tags
-from seldon.core.errors import log_error
-from seldon.core.pipeline import MUTE_SIGNALS, Assistant
+from seldon import tags
+from seldon.config import Config, Plugin, load_secrets
+from seldon.errors import log_error
+from seldon.pipeline import Seldon
 
 log = logging.getLogger("seldon")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="seldon", description="Assistant vocal polyvalent")
+    parser = argparse.ArgumentParser(prog="seldon", description="Assistant vocal")
     parser.add_argument("-c", "--config", default="config.yaml")
-    parser.add_argument("--text", action="store_true", help="Clavier + console au lieu du micro et du haut-parleur")
+    parser.add_argument("--text", action="store_true", help="clavier et console au lieu du micro et du haut-parleur")
     args = parser.parse_args()
     tags.take_token()   # jeton de l'interface, retiré de l'environnement : aucun sous-processus ne le voit
-    for sig in MUTE_SIGNALS:   # un clic sur le bouton micro avant que Seldon soit prêt ne le tue pas
-        signal.signal(sig, signal.SIG_IGN)
-
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     try:
-        secrets = Path(args.config).parent / ".env"   # identifiants, hors de config.yaml
-        if keys := load_secrets(secrets):
-            log.info("Identifiants chargés depuis %s : %s", secrets, ", ".join(keys))
+        load_secrets(Path(args.config).parent / ".env")   # identifiants, hors de config.yaml
         cfg = Config.load(args.config)
         if args.text:
-            cfg.stt = StageConfig("text")
-            cfg.speakers = StageConfig("none")
-            cfg.tts = StageConfig("console")
+            cfg.stt, cfg.speakers, cfg.tts = Plugin("keyboard"), None, Plugin("console")
         logging.getLogger().setLevel(cfg.log_level)
-        if cfg.log_level != "DEBUG":   # httpx journalise chaque requête (URL comprise) au niveau INFO
-            for name in ("httpx", "httpcore"):
-                logging.getLogger(name).setLevel(logging.WARNING)
-        asyncio.run(Assistant.from_config(cfg).run())
+        for name in ("httpx", "httpcore"):   # chaque requête (URL comprise) sinon
+            logging.getLogger(name).setLevel(logging.WARNING)
+        asyncio.run(Seldon(cfg).run())
     except KeyboardInterrupt:
         pass
     except Exception as e:
-        log_error(log, "Seldon n'a pas pu continuer", e)
+        log_error(log, "Seldon n'a pas pu démarrer", e)
         sys.exit(1)
 
 

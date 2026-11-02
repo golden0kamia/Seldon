@@ -1,4 +1,4 @@
-"""Éléments enregistrés : voix des locuteurs et conversations de la mémoire.
+"""Éléments enregistrés : voix des locuteurs et conversations de la mémoire (``seldon.brain.memory``).
 
 Chaque vue lit un dossier de ``data/`` (celui de la configuration) et le surveille :
 une liste à gauche, la fiche de l'élément choisi à droite. Rien n'est importé des
@@ -16,10 +16,10 @@ from typing import Callable
 from PySide6.QtCore import QFileSystemWatcher, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea,
-    QSizePolicy, QToolButton, QVBoxLayout, QWidget,
+    QSizePolicy, QVBoxLayout, QWidget,
 )
 
-from seldon.core.memory import Conversation, load_conversations
+from seldon.brain.memory import Conversation, load_all
 from seldon.gui import theme
 
 LIST_WIDTH = 320
@@ -54,7 +54,7 @@ _cache: dict[Path, tuple[tuple, list[Conversation]]] = {}
 
 
 def conversations(folder: Path) -> list[Conversation]:
-    """``load_conversations`` mise en cache : relue seulement si un fichier a changé (nom, taille, date).
+    """``load_all`` mise en cache : relue seulement si un fichier a changé (nom, taille, date).
 
     La liste de la page Mémoire et la fiche de chaque voix s'en servent à chaque clic :
     sans cache, toutes les conversations seraient relues à chaque fois.
@@ -66,7 +66,7 @@ def conversations(folder: Path) -> list[Conversation]:
     cached = _cache.get(folder)
     if signature is not None and cached and cached[0] == signature:
         return cached[1]
-    convs = load_conversations(folder)
+    convs = load_all(folder)
     if signature is not None:
         _cache[folder] = (signature, convs)
     return convs
@@ -249,7 +249,7 @@ class SpeakersView(RecordsView):
         except OSError:
             enrolled = "?"
         try:
-            convs = [c for c in conversations(self.conversations_dir().resolve()) if key in (c.speakers or [])]
+            convs = [c for c in conversations(self.conversations_dir().resolve()) if key in c.speakers]
         except Exception:  # noqa: BLE001 — la fiche de la voix reste utile sans ses conversations
             convs = []
         rows = [f"<p><b>{html.escape(key)}</b></p>",
@@ -262,30 +262,21 @@ class SpeakersView(RecordsView):
                         + ("<br>• …" if len(convs) > 8 else "") + "</p>")
         else:
             rows.append("<p>Aucune conversation enregistrée avec cette voix.</p>")
-        rows.append(f"<p>Ajouter des échantillons : <code>python -m seldon.cli.enroll {html.escape(key)}</code></p>")
         return "".join(rows)
 
     def empty_text(self, folder: Path) -> str:
         return (f"Aucune voix enregistrée dans {_home(folder, self.base)}.\n\n"
-                "Pour en ajouter une : python -m seldon.cli.enroll <Nom>")
+                "Seldon apprend une voix inconnue quand la personne se présente (outil « voix »).")
 
 
 class ConversationsView(RecordsView):
-    """Conversations sauvegardées : résumé (calculé localement) ou transcription complète."""
+    """Conversations sauvegardées : en-tête (période, participants) puis tous les messages."""
 
     title = "conversations enregistrées"
 
     def __init__(self, folder: Callable[[], Path], base: Path | None = None, parent: QWidget | None = None) -> None:
         self.convs: dict[str, Conversation] = {}
-        self.modes: list[QToolButton] = []
         super().__init__(folder, base, parent)
-        for i, (text, tip) in enumerate((("Résumé", "Période, participants, thèmes et demandes"),
-                                        ("Transcription", "Tous les messages de la conversation"))):
-            b = QToolButton(text=text, toolTip=tip, checkable=True, autoExclusive=True, objectName="mode")
-            b.setChecked(i == 0)
-            b.clicked.connect(self.show_detail)
-            self.tools.addWidget(b)
-            self.modes.append(b)
         self.open_btn = QPushButton("Ouvrir le fichier")
         self.open_btn.setToolTip("Ouvrir le JSON de la conversation dans l'éditeur")
         self.open_btn.clicked.connect(self._open)
@@ -297,31 +288,27 @@ class ConversationsView(RecordsView):
         self.show_detail()
 
     def load(self, folder: Path) -> list[tuple[str, str, str]]:
-        self.convs = {str(c.id): c for c in conversations(folder)}
+        self.convs = {c.id: c for c in conversations(folder)}
         out = []
         for key, c in self.convs.items():
-            title = str(c.title or "sans titre")
+            title = c.title or "sans titre"
             short = title if len(title) <= TITLE_CHARS else title[:TITLE_CHARS].rsplit(" ", 1)[0] + "…"
-            speakers = [str(s) for s in c.speakers or []]
-            who = f"\n{', '.join(speakers)}" if speakers else ""
-            count = len(c.transcript) if isinstance(c.transcript, list) else 0
-            out.append((key, f"{short}\n{_when(c.updated)} · {count} msg", title + who))
+            who = f"\n{', '.join(c.speakers)}" if c.speakers else ""
+            out.append((key, f"{short}\n{_when(c.updated)} · {len(c.messages)} msg", title + who))
         return out
 
     def render(self, key: str) -> str:
         conv = self.convs[key]
-        head = f"<p><b>{html.escape(str(conv.title or 'sans titre'))}</b></p>"
-        if self.modes and self.modes[1].isChecked():
-            lines = []
-            for m in conv.transcript:
-                if not isinstance(m, dict):
-                    continue
-                who = {"user": m.get("speaker") or "inconnu", "summary": "Résumé"}.get(m.get("role"), "Seldon")
-                when = _when(m["ts"])[-5:] if m.get("ts") else ""   # HH:MM
-                lines.append(f"<p><b>{html.escape(str(who))}</b> <span style='color:{theme.MUTED}'>{when}</span><br>"
-                             f"{_paragraphs(str(m.get('text', '')))}</p>")
-            return head + "".join(lines)
-        return head + f"<p>{_paragraphs(conv.summary())}</p>"
+        rows = [f"<p><b>{html.escape(conv.title or 'sans titre')}</b><br>"
+                f"<span style='color:{theme.MUTED}'>Du {_when(conv.created)} au {_when(conv.updated)} · "
+                f"{len(conv.messages)} messages · Participants : {html.escape(', '.join(conv.speakers) or 'inconnus')}."
+                "</span></p>"]
+        for m in conv.messages:
+            who = (m.get("speaker") or "inconnu") if m["role"] == "user" else "Seldon"
+            when = _when(m["time"])[-5:] if isinstance(m.get("time"), (int, float)) else ""   # HH:MM
+            rows.append(f"<p><b>{html.escape(str(who))}</b> <span style='color:{theme.MUTED}'>{when}</span><br>"
+                        f"{_paragraphs(m['text'])}</p>")
+        return "".join(rows)
 
     def empty_text(self, folder: Path) -> str:
         return (f"Aucune conversation enregistrée dans {_home(folder, self.base)}.\n\n"
@@ -329,7 +316,7 @@ class ConversationsView(RecordsView):
 
     def update_tools(self) -> None:
         on = self.selected() is not None
-        for b in [*self.modes, getattr(self, "open_btn", None), getattr(self, "delete_btn", None)]:
+        for b in (getattr(self, "open_btn", None), getattr(self, "delete_btn", None)):
             if b is not None:
                 b.setEnabled(on)
 
@@ -348,7 +335,7 @@ class ConversationsView(RecordsView):
     def _delete(self) -> None:
         if (path := self._file()) is None:
             return
-        title = str(self.convs[self.selected()].title or "sans titre")
+        title = self.convs[self.selected()].title or "sans titre"
         answer = QMessageBox.question(
             self, "Supprimer la conversation",
             f"Supprimer définitivement « {title} » ?\n\n{_home(path, self.base)}",

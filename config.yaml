@@ -1,45 +1,29 @@
-# Configuration de Seldon. Chaque étage : {engine: <nom>, options: {...}}.
+# Configuration de Seldon. Chaque plugin : {engine: <nom>, options: {...}} (voir seldon/registry.py).
 # Lancer : python -m seldon            (micro + haut-parleur)
 #          python -m seldon --text     (clavier + console, pour tester le cerveau)
 
 log_level: INFO
-memory:                   # mémoire des conversations (reprise à tout moment, outil « conversations »)
-  enabled: true
-  dir: data/conversations
-  new_after_idle_s: 600   # après 10 min de silence, nouvelle conversation (l'ancienne est gardée)
-  greet_after_s: 21600    # après 6 h d'absence, Seldon accueille la personne (null = jamais)
-  suggest_related: true   # nouvelle conversation sur un sujet déjà abordé : propose de le poursuivre
-  compress_every_s: 1800  # toutes les 30 min, résume le début des conversations trop longues (null = jamais)
-  compress_max_chars: 20000
-  compress_keep: 12       # derniers messages gardés tels quels
-
-commands: true            # commandes locales : exit, reset, actions, aide (taper /aide)
 confirm: console          # validation des actions sensibles : console | always | never
-acknowledge: true         # annonce qu'une action est lancée (phrase variée, selon la demande)
 
-stt:
+stt:                      # oreille : micro -> texte
   engine: whisper
   options:
     model: small          # tiny / base / small / medium / large-v3
     language: fr
     device: cpu           # cuda si GPU NVIDIA
     compute_type: int8
-    vad: silero
     silence_ms: 700       # silence qui termine une phrase
-    barge_in: true        # on peut couper la parole à Seldon (« stop », « attends »…)
-    barge_in_db: -35      # niveau minimal d'une interruption ; monter si l'écho des HP le déclenche
 
-speakers:                 # qui parle ; outil « voix » : apprend les voix inconnues
-  engine: resemblyzer     # "none" pour désactiver
+speakers:                 # qui parle ; outil « voix » : apprend les voix inconnues ("none" pour désactiver)
+  engine: resemblyzer
   options:
     voices_dir: data/voices
-    threshold: 0.75       # enregistrer une voix : python -m seldon.cli.enroll Bastien
-    unknown_memory_s: 600 # une voix inconnue reste enregistrable 10 min (action « voix »)
-    adapt_threshold: 0.85 # phrase reconnue avec ce score : affine l'empreinte (null = jamais)
+    threshold: 0.75       # enregistrer une voix au micro : python -m seldon.cli.enroll Bastien
+    unknown_memory_s: 600 # une voix inconnue reste enregistrable 10 min
     max_samples: 40       # échantillons gardés par voix (les plus récents)
 
-brain:
-  engine: llamacpp        # serveur local `llama serve` (llama.cpp). Alternatives : ollama, claude, openai
+brain:                    # cerveau : le LLM qui choisit les outils
+  engine: llamacpp        # serveur local `llama serve` (llama.cpp). Autre : claude
   options:
     base_url: http://127.0.0.1:9931/v1
     server_command: ./llama-serve.sh   # lancé si le serveur ne répond pas ; null : jamais
@@ -47,28 +31,28 @@ brain:
     vision: true          # true si le modèle lit les images (caméra)
     thinking: false       # raisonnement du modèle : plus lent, parfois plus juste
     max_steps: 10
-  # engine: ollama
-  # options: {model: llama3.1:8b}
-  # engine: claude
-  # options: {model: claude-opus-5-5, effort: low}   # nécessite ANTHROPIC_API_KEY (fichier .env)
-  # engine: openai
-  # options: {model: gpt-5.6-luna, reasoning_effort: low}   # nécessite OPENAI_API_KEY (fichier .env)
-  # backup:               # cerveau de secours si le principal ne démarre pas ou échoue (même format)
-  #   engine: claude
-  #   options: {model: claude-opus-5-5, effort: low}
+  backup:                 # LLM de secours si le principal échoue (même format)
+    engine: claude
+    options:
+      auth: abonnement    # compte claude.ai via Claude Code (claude auth login) ; api : ANTHROPIC_API_KEY
+      effort: medium
 
-tts:
-  engine: piper           # pyttsx3 en secours (espeak)
+tts:                      # voix : texte -> haut-parleur
+  engine: piper
   options:
     voice: fr_FR-tom-medium   # voix masculine ; autre : fr_FR-upmc-medium + speaker_id 1 (pierre)
-    speed: 1.15            # 1.0 = normal ; 1.25 = 25 % plus rapide
+    speed: 1.15           # 1.0 = normal ; 1.25 = 25 % plus rapide
 
-tools:                    # actions en Python (seldon/tools)
-  - speak
-  - controle              # « coupe ton micro », « arrête-toi » : Seldon agit sur son propre état
+memory:                   # mémoire des conversations (outil « conversations »)
+  enabled: true
+  dir: data/conversations
+  new_after_idle_s: 600   # après 10 min de silence, nouvelle conversation (l'ancienne est gardée)
+
+tools:                    # outils en Python (seldon/tools)
+  - speak                 # indispensable : c'est ainsi que Seldon répond
   - engine: terminal
     options:
-      mode: allowlist     # niveaux bénigne / standard / sévère ; sinon confirm | auto
+      mode: allowlist     # confirm (tout valider) | allowlist (niveaux bénigne / standard / sévère) | auto
       timeout: 30
       admins: [Bastien]   # leurs commandes standard passent sans confirmation
       allowed_speakers: null   # ex. [Bastien] : seuls eux lancent des commandes non bénignes
@@ -82,7 +66,7 @@ tools:                    # actions en Python (seldon/tools)
       backend: auto       # auto | remote | mpris
       timeout: 10
       # identifiants : FEISHIN_USERNAME / FEISHIN_PASSWORD dans le fichier .env
-  - engine: desktop       # contrôle du PC : notifications lues, luminosité, ne pas déranger…
+  - engine: desktop       # contrôle du PC (KDE Plasma 6) : notifications lues, luminosité, ne pas déranger…
     options:
       read_notifications: true
       ignore_apps: [Seldon]
@@ -93,14 +77,12 @@ tools:                    # actions en Python (seldon/tools)
       notes_folder: Notes   # dossier de l'application Notes
       # NEXTCLOUD_HOST, NEXTCLOUD_USERNAME, NEXTCLOUD_PASSWORD dans le fichier .env
 
-mcp:                      # serveurs MCP : leurs outils sont proposés au cerveau (seldon/mcp)
+mcp:                      # serveurs MCP : un outil par serveur (seldon/mcp.py)
   - engine: home_assistant   # domotique via le serveur MCP de Home Assistant
     options:
       url: http://192.168.1.105:8123/api/mcp
-      # jeton longue durée : HA_TOKEN dans le fichier .env (ne jamais l'écrire ici)
+      token_env: HA_TOKEN    # jeton longue durée dans le fichier .env (jamais ici)
       timeout: 10
-      confirm_domains: [lock, alarm_control_panel]
-      confirm_keywords: [portail, garage, serrure, verrou, alarme]
+      confirm: [lock, alarm_control_panel, portail, garage, serrure, verrou, alarme]   # appels à valider
 
-skills:                   # consignes chargées à la demande : skills/<nom>/SKILL.md
-  - bilan-du-matin
+skills: []                # consignes chargées à la demande : skills/<nom>/SKILL.md

@@ -1,4 +1,4 @@
-"""Tests de l'action feishin (serveur Remote factice et MPRIS simulé, sans réseau)."""
+"""Tests de l'outil feishin (serveur Remote factice et MPRIS simulé, sans réseau)."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ import types
 
 import pytest
 
-from seldon.core.types import ActionContext
 from seldon.tools import feishin as mod
 from seldon.tools.feishin import Feishin, Mpris
+from tests.conftest import FakeApp, context
 
 SONG = {"id": "s1", "name": "A Horse With No Name", "artistName": "America", "album": "America",
         "duration": 251_540, "userFavorite": False, "userRating": 0, "_serverId": "srv"}
@@ -118,61 +118,64 @@ def server(monkeypatch):
     srv = FakeServer()
     fake = types.SimpleNamespace(connect=srv.connect, ConnectionClosed=Closed, WebSocketException=WSError)
     monkeypatch.setitem(sys.modules, "websockets", fake)
-    monkeypatch.delenv("FEISHIN_USERNAME", raising=False)
-    monkeypatch.delenv("FEISHIN_PASSWORD", raising=False)
     return srv
 
 
+@pytest.fixture(autouse=True)
+def credentials(monkeypatch):
+    monkeypatch.setenv("FEISHIN_USERNAME", "u")
+    monkeypatch.setenv("FEISHIN_PASSWORD", "p")
+    monkeypatch.setattr(mod, "CONFIRM_DELAY", 0.2)
+
+
 def action(**kw) -> Feishin:
-    kw.setdefault("username", "u")
-    kw.setdefault("password", "p")
     kw.setdefault("timeout", 1.0)
-    kw.setdefault("confirm_delay", 0.2)
     return Feishin(**kw)
 
 
+def login(monkeypatch, username: str, password: str) -> None:
+    monkeypatch.setenv("FEISHIN_USERNAME", username)
+    monkeypatch.setenv("FEISHIN_PASSWORD", password)
+
+
 async def run(a: Feishin, **params):
-    return await a.run(params, ActionContext())
+    return await a.run(params, context(FakeApp()))
 
 
 # --- serveur Remote ---
 
 async def test_status_authenticates(server):
     r = await run(action(backend="remote"), command="status")
-    assert not r.is_error
+    assert not r.error
     assert "A Horse With No Name" in r.text and "America" in r.text and "4:11" in r.text and "60 %" in r.text
     auth = server.received[0]
     assert auth["event"] == "authenticate"
     assert base64.b64decode(auth["header"].removeprefix("Basic ")) == b"u:p"
 
 
-async def test_credentials_from_env(server, monkeypatch):
-    monkeypatch.setenv("FEISHIN_USERNAME", "u")
-    monkeypatch.setenv("FEISHIN_PASSWORD", "p")
-    r = await run(Feishin(backend="remote", timeout=1), command="status")
-    assert not r.is_error
+async def test_bad_credentials(server, monkeypatch):
+    login(monkeypatch, "u", "faux")
+    r = await run(action(backend="remote"), command="status")
+    assert r.error and "refusé les identifiants" in r.text
 
 
-async def test_bad_credentials(server):
-    r = await run(action(backend="remote", password="faux"), command="status")
-    assert r.is_error and "refusé les identifiants" in r.text
+async def test_missing_credentials(server, monkeypatch):
+    login(monkeypatch, "", "")
+    r = await run(action(backend="remote"), command="status")
+    assert r.error and "FEISHIN_PASSWORD" in r.text
 
 
-async def test_missing_credentials(server):
-    r = await run(action(backend="remote", username="", password=""), command="status")
-    assert r.is_error and "FEISHIN_PASSWORD" in r.text
-
-
-async def test_unprotected_server(server):
+async def test_unprotected_server(server, monkeypatch):
     server.username = server.password = ""
-    r = await run(action(backend="remote", username="", password=""), command="status")
-    assert not r.is_error and "A Horse" in r.text
+    login(monkeypatch, "", "")
+    r = await run(action(backend="remote"), command="status")
+    assert not r.error and "A Horse" in r.text
     assert server.received == []
 
 
 async def test_toggle_pauses_when_playing(server):
     r = await run(action(), command="toggle")
-    assert not r.is_error and "pause" in r.text
+    assert not r.error and "pause" in r.text
     assert server.received[-1] == {"event": "pause"}
 
 
@@ -188,13 +191,13 @@ async def test_next_reports_new_song(server):
 ])
 async def test_volume(server, params, volume):
     r = await run(action(), **params)
-    assert not r.is_error and f"{volume} %" in r.text
+    assert not r.error and f"{volume} %" in r.text
     assert server.received[-1] == {"event": "volume", "volume": volume}
 
 
 async def test_volume_out_of_range(server):
     r = await run(action(), command="volume", value=150)
-    assert r.is_error and server.received == []
+    assert r.error and server.received == []
 
 
 async def test_forward_and_seek_bounds(server):
@@ -229,14 +232,14 @@ async def test_rating(server):
 
 async def test_search(server):
     r = await run(action(), command="search", query="america")
-    assert not r.is_error and "Ventura Highway" in r.text and "id t2" in r.text
+    assert not r.error and "Ventura Highway" in r.text and "id t2" in r.text
     req = server.received[-1]
     assert req["event"] == "tracks-request" and req["searchTerm"] == "america" and req["requestId"]
 
 
 async def test_play_media_prefers_exact_name(server):
     r = await run(action(), command="play_media", query="sister golden hair")
-    assert not r.is_error and "Sister Golden Hair" in r.text
+    assert not r.error and "Sister Golden Hair" in r.text
     play = server.received[-1]
     assert play["event"] == "play-track" and play["id"] == "t2" and play["playType"] == "now"
 
@@ -244,7 +247,7 @@ async def test_play_media_prefers_exact_name(server):
 async def test_play_media_by_id_and_error(server):
     server.ack_error = "No server connected"
     r = await run(action(), command="play_media", id="al-1", kind="album", play_mode="next")
-    assert r.is_error and "No server connected" in r.text
+    assert r.error and "No server connected" in r.text
     assert server.received[-1]["event"] == "play-album" and server.received[-1]["playType"] == "next"
 
 
@@ -301,44 +304,45 @@ async def test_mpris_status(bus):
 
 
 @pytest.mark.parametrize("params, expected", [
-    ({"command": "toggle"}, ("call", "org.mpris.MediaPlayer2.Feishin", Mpris.PATH, Mpris.IFACE, "PlayPause")),
-    ({"command": "volume", "value": 25}, ("set-property", "org.mpris.MediaPlayer2.Feishin", Mpris.PATH,
+    ({"command": "toggle"}, ("call", Mpris.BUS, Mpris.PATH, Mpris.IFACE, "PlayPause")),
+    ({"command": "volume", "value": 25}, ("set-property", Mpris.BUS, Mpris.PATH,
                                           Mpris.IFACE, "Volume", "d", "0.25")),
-    ({"command": "shuffle"}, ("set-property", "org.mpris.MediaPlayer2.Feishin", Mpris.PATH,
+    ({"command": "shuffle"}, ("set-property", Mpris.BUS, Mpris.PATH,
                               Mpris.IFACE, "Shuffle", "b", "false")),
-    ({"command": "repeat"}, ("set-property", "org.mpris.MediaPlayer2.Feishin", Mpris.PATH,
+    ({"command": "repeat"}, ("set-property", Mpris.BUS, Mpris.PATH,
                              Mpris.IFACE, "LoopStatus", "s", "Track")),
-    ({"command": "rewind", "value": 40}, ("call", "org.mpris.MediaPlayer2.Feishin", Mpris.PATH, Mpris.IFACE,
+    ({"command": "rewind", "value": 40}, ("call", Mpris.BUS, Mpris.PATH, Mpris.IFACE,
                                           "SetPosition", "ox", "/org/node/mediaplayer/Feishin/track/s1", "0")),
 ])
-async def test_mpris_commands(bus, params, expected):
-    r = await run(action(backend="mpris", confirm_delay=0), **params)
-    assert not r.is_error
+async def test_mpris_commands(bus, params, expected, monkeypatch):
+    monkeypatch.setattr(mod, "CONFIRM_DELAY", 0)
+    r = await run(action(backend="mpris"), **params)
+    assert not r.error
     assert expected in bus.calls
 
 
 async def test_auto_falls_back_to_mpris(server, bus):
     server.reachable = False
     r = await run(action(), command="status")
-    assert not r.is_error and "A Horse" in r.text
+    assert not r.error and "A Horse" in r.text
 
 
 async def test_auto_no_fallback_for_search(server, bus):
     server.reachable = False
     r = await run(action(), command="search", query="x")
-    assert r.is_error and "injoignable" in r.text and bus.calls == []
+    assert r.error and "injoignable" in r.text and bus.calls == []
 
 
 async def test_missing_websockets_falls_back(monkeypatch, bus):
     monkeypatch.setitem(sys.modules, "websockets", None)   # import -> ImportError
     r = await run(action(), command="status")
-    assert not r.is_error and "A Horse" in r.text
+    assert not r.error and "A Horse" in r.text
 
 
 # --- validation ---
 
 def test_schema_is_strict():
-    schema = Feishin().tool_definition()["input_schema"]
+    schema = Feishin().schema()["parameters"]
     assert schema["additionalProperties"] is False and schema["required"] == ["command"]
     assert set(schema["properties"]["command"]["enum"]) == set(mod.COMMANDS)
 
@@ -349,7 +353,7 @@ def test_schema_is_strict():
 ])
 async def test_invalid_params(params, bus):
     r = await run(action(backend="mpris"), **params)
-    assert r.is_error and bus.calls == []
+    assert r.error and bus.calls == []
 
 
 def test_bad_options():

@@ -9,8 +9,11 @@ from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox, QLabel, QLineEdit, QSpinBox, QWidget
 from ruamel.yaml.scalarstring import ScalarString
 
+from seldon.config import CONFIRM_MODES
+
 FIXED_CHOICES = {
     "log_level": ["DEBUG", "INFO", "WARNING", "ERROR"],
+    "confirm": list(CONFIRM_MODES),
     "compute_type": ["int8", "int8_float16", "float16", "float32"],
 }
 INT_RANGE = 1_000_000_000   # au-delà (ou décimales plus fines que DECIMALS) : saisie YAML, sans arrondi

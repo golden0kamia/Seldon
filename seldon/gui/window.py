@@ -29,7 +29,7 @@ def project_roots(project: Path, doc) -> list[tuple[str, Path]]:
         if (project / name).is_dir():
             roots.append((label, project / name))
     doc = doc or {}
-    for item in [*(doc.get("tools") or []), *(doc.get("actions") or [])]:
+    for item in doc.get("tools") or []:
         if not hasattr(item, "get"):
             continue
         cwd = (item.get("options") or {}).get("cwd")
@@ -131,7 +131,6 @@ class MainWindow(QMainWindow):
             "text": act("▶ Lancer en mode &texte", lambda: self.launch(text=True), "Ctrl+F5"),
             "stop": act("■ &Arrêter", lambda: self.runner.stop(), "Shift+F5"),
             "restart": act("↻ &Redémarrer (même mode)", self.runner.restart, "Ctrl+Shift+F5"),
-            "mute": act("🔇 &Couper / rétablir le micro", self.runner.mic_btn.toggle, "F6"),
         }
         for a in self.run_actions.values():
             run.addAction(a)
@@ -183,7 +182,6 @@ class MainWindow(QMainWindow):
         elif index == LOGS_PAGE:
             (self.runner.input if self.runner.input.isEnabled() else self.runner.log).setFocus()
         elif index == STRUCTURE_PAGE:
-            self.structure.ensure_loaded()   # moteurs lus au premier affichage seulement
             self.structure.view.setFocus()
         else:
             self.settings.nav.setFocus()
@@ -205,7 +203,6 @@ class MainWindow(QMainWindow):
 
     def _runner_state(self) -> None:
         if hasattr(self, "run_actions"):
-            self.run_actions["mute"].setEnabled(self.runner.can_mute)   # mode vocal, une fois Seldon prêt
             self.run_actions["restart"].setEnabled(self.runner.restart_btn.isEnabled())
         self._update_status()
 
@@ -274,7 +271,7 @@ class MainWindow(QMainWindow):
         self.files.set_roots(project_roots(self.project, self.settings.doc), self.files.recent)
 
     def _update_status(self) -> None:
-        pending =self.settings.dirty + sum(t.modified for t in self.editors.file_tabs())
+        pending = self.settings.dirty + sum(t.modified for t in self.editors.file_tabs())
         if self.runner.pending:
             self.masthead.set_state("confirmation demandée", theme.AMBER)
         elif pending:

@@ -1,11 +1,12 @@
-"""Action « terminal » : exécute une commande shell sur la machine de l'utilisateur.
+"""Outil « terminal » : exécute une commande shell sur la machine de l'utilisateur.
 
 Les commandes viennent de la voix puis d'un LLM : la sécurité prime. Le modèle
 peut être manipulé (sortie d'une commande précédente, fichier lu, autre voix
 dans la pièce) : une commande n'est jamais jugée sur l'intention affichée.
 
-- ``denylist`` : motifs regex toujours refusés (rm -rf /, mkfs, dd vers un disque,
-  extinction, fork bomb, curl | sh...), quel que soit le mode ;
+- liste d'interdiction (``DEFAULT_DENYLIST`` + ``extra_denylist``) : motifs
+  regex toujours refusés (rm -rf /, mkfs, dd vers un disque, extinction, fork
+  bomb, curl | sh...), quel que soit le mode ;
 - les autres commandes sont classées en trois niveaux (``classify``) :
 
   * **bénigne** : lecture seule (programmes de ``allowlist`` sans option ni
@@ -13,7 +14,7 @@ dans la pièce) : une commande n'est jamais jugée sur l'intention affichée.
     fichier sensible) ; tout le monde peut la lancer ;
   * **standard** : peut modifier quelque chose ; acceptée d'office si la demande
     vient d'un des ``admins``, validation humaine sinon ;
-  * **sévère** : motifs de ``severe`` (sudo, rm, kill, git push --force…),
+  * **sévère** : motifs de ``DEFAULT_SEVERE`` (sudo, rm, kill, git push --force…),
     fichiers sensibles (clés, ``.env``…) ou commande dont l'effet ne se lit pas
     dans la ligne (``bash -c``, ``python -c``, ``xargs``, ``$(…)``, nom de
     programme masqué…) ; validation humaine obligatoire, admin ou non ;
@@ -53,9 +54,7 @@ import signal
 from pathlib import Path
 from typing import Any
 
-from seldon.core.action import Action
-from seldon.core.registry import register
-from seldon.core.types import ActionContext, ActionResult
+from seldon.base import Context, Result, Tool
 
 MODES = ("confirm", "allowlist", "auto")
 BENIGN, STANDARD, SEVERE = "bénigne", "standard", "sévère"
@@ -343,39 +342,6 @@ def _runs_hidden_code(argv: list[str]) -> bool:
     return False
 
 
-# Accusés de réception selon le programme lancé (premier mot utile de la commande).
-_ACK_KINDS: list[tuple[frozenset[str], tuple[str, ...]]] = [
-    (frozenset({"df", "du", "free", "lsblk", "findmnt"}),
-     ("Je regarde l'espace disponible.", "Je vérifie l'occupation de la machine.")),
-    (frozenset({"ps", "top", "htop", "uptime", "pgrep", "nvidia-smi", "rocm-smi", "sensors", "systemctl",
-                "journalctl", "dmesg", "uname", "lscpu", "lspci", "lsusb", "hostnamectl"}),
-     ("Je jette un œil au système.", "Je vérifie l'état de la machine.", "Je regarde ce qui tourne.")),
-    (frozenset({"ls", "cat", "head", "tail", "less", "tree", "find", "locate", "grep", "rg", "wc", "stat", "file"}),
-     ("Je regarde dans les fichiers.", "Je fouille ça.", "Je jette un œil.", "Je cherche.")),
-    (frozenset({"git"}), ("Je regarde le dépôt.", "Je m'occupe du dépôt.")),
-    (frozenset({"apt", "apt-get", "dnf", "pacman", "flatpak", "snap", "pip", "pipx", "npm", "cargo"}),
-     ("Je m'occupe des paquets.", "Je gère ça côté paquets, un instant.")),
-    (frozenset({"ping", "curl", "wget", "ip", "ss", "nmcli", "dig", "nslookup", "traceroute"}),
-     ("Je vérifie le réseau.", "Je teste la connexion.")),
-    (frozenset({"mv", "cp", "mkdir", "touch", "rm", "ln", "chmod", "chown", "tar", "zip", "unzip"}),
-     ("Je m'occupe des fichiers.", "Je fais la manipulation.", "C'est parti pour les fichiers.")),
-]
-_ACK_DEFAULT = ("Compris, je m'en occupe.", "D'accord, je lance ça.", "Je m'y mets.", "Entendu, un instant.",
-                "Ça marche, je lance la commande.")
-
-
-def _ack_program(command: str) -> str:
-    """Premier programme de ``command`` (sans sudo ni affectations de variables), ou « »."""
-    try:
-        words = shlex.split(_SPLIT.split(command, 1)[0])
-    except ValueError:
-        words = command.split()
-    for word in words:
-        if word not in ("sudo", "env", "time", "nice", "nohup") and not _ASSIGN.match(word):
-            return os.path.basename(word)
-    return ""
-
-
 def _truncate(text: str, max_chars: int, dropped: int = 0) -> str:
     if len(text) <= max_chars and not dropped:
         return text
@@ -385,10 +351,8 @@ def _truncate(text: str, max_chars: int, dropped: int = 0) -> str:
     return f"{text[:head]}\n[... {cut} caractères tronqués ...]\n{text[-tail:]}"
 
 
-@register("tools", "terminal")
-class Terminal(Action):
+class Terminal(Tool):
     name = "run_shell_command"
-    acknowledgement = _ACK_DEFAULT
     description = (
         "Exécute une commande shell (bash) sur l'ordinateur Linux de l'utilisateur et "
         "renvoie le code de sortie et la sortie (stdout + stderr, éventuellement tronquée). "
@@ -404,48 +368,36 @@ class Terminal(Action):
 
     def __init__(
         self,
-        mode: str = "confirm",
-        allowlist: list[str] | None = None,
-        denylist: list[str] | None = None,
-        extra_denylist: list[str] | None = None,
-        severe: list[str] | None = None,
-        extra_severe: list[str] | None = None,
-        admins: list[str] | None = None,        # commandes standard acceptées sans validation
-        allowed_speakers: list[str] | None = None,
-        timeout: float = 30.0,
-        max_timeout: float = 300.0,
-        cwd: str | None = None,
-        max_output_chars: int = 8000,
-        shell: str = "/bin/bash",
-        sensitive: list[str] | None = None,     # chemins secrets (clés, .env…) : jamais bénins, sinon sévères
-        extra_sensitive: list[str] | None = None,
-        hidden_env: list[str] | None = None,    # variables d'environnement cachées aux commandes (motifs)
+        mode: str = "confirm",                  # confirm (tout valider) | allowlist (niveaux) | auto (sauf sévères)
+        admins: list[str] | None = None,        # leurs commandes standard passent sans validation
+        allowed_speakers: list[str] | None = None,  # seuls eux lancent des commandes non bénignes (null = tous)
+        timeout: float = 30.0,                  # délai par défaut d'une commande (s)
+        max_timeout: float = 300.0,             # délai maximal que le cerveau peut demander (s)
+        cwd: str | None = None,                 # répertoire de travail par défaut (null = dossier personnel)
+        allowlist: list[str] | None = None,     # programmes en lecture seule (null = liste intégrée)
+        extra_denylist: list[str] | None = None,    # motifs regex toujours refusés, en plus des intégrés
+        extra_severe: list[str] | None = None,      # motifs regex sévères, en plus des intégrés
+        extra_sensitive: list[str] | None = None,   # chemins secrets, en plus des intégrés
+        hidden_env: list[str] | None = None,    # variables cachées aux commandes (motifs, null = clés et jetons)
+        max_output_chars: int = 8000,           # sortie renvoyée au cerveau (début et fin gardés)
         max_read_bytes: int = 16_000_000,       # au-delà, la commande est arrêtée (sortie sans fin)
     ) -> None:
         if mode not in MODES:
             raise ValueError(f"mode doit être l'un de {MODES}, reçu {mode!r}")
         self.mode = mode
         self.allowlist = set(DEFAULT_ALLOWLIST if allowlist is None else allowlist)
-        patterns = (DEFAULT_DENYLIST if denylist is None else denylist) + (extra_denylist or [])
-        self.denylist = [re.compile(p, re.IGNORECASE | re.DOTALL) for p in patterns]
-        severe_patterns = (DEFAULT_SEVERE if severe is None else severe) + (extra_severe or [])
-        self.severe = [re.compile(p, re.IGNORECASE | re.DOTALL) for p in severe_patterns]
-        sensitive_patterns = (DEFAULT_SENSITIVE if sensitive is None else sensitive) + (extra_sensitive or [])
-        self.sensitive = [re.compile(p, re.IGNORECASE) for p in sensitive_patterns]
-        self.hidden_env = [re.compile(p, re.IGNORECASE)
-                           for p in (DEFAULT_HIDDEN_ENV if hidden_env is None else hidden_env)]
+        self.denylist = [re.compile(p, re.I | re.S) for p in DEFAULT_DENYLIST + (extra_denylist or [])]
+        self.severe = [re.compile(p, re.I | re.S) for p in DEFAULT_SEVERE + (extra_severe or [])]
+        self.sensitive = [re.compile(p, re.I) for p in DEFAULT_SENSITIVE + (extra_sensitive or [])]
+        self.hidden_env = [re.compile(p, re.I) for p in (DEFAULT_HIDDEN_ENV if hidden_env is None else hidden_env)]
         self.admins = {a.casefold() for a in admins or []}
         self.allowed_speakers = None if allowed_speakers is None else {s.casefold() for s in allowed_speakers}
         self.timeout = timeout
         self.max_timeout = max_timeout
         self.cwd = Path(cwd or "~").expanduser()
         self.max_output_chars = max_output_chars
-        self.shell = shell
         self.max_read_bytes = max_read_bytes
-
-    @property
-    def input_schema(self) -> dict[str, Any]:  # type: ignore[override]
-        return {
+        self.parameters = {
             "type": "object",
             "properties": {
                 "command": {"type": "string", "description": "Commande bash à exécuter."},
@@ -536,33 +488,29 @@ class Terminal(Action):
             return False
         return not self.is_admin(speaker)
 
-    def acknowledge(self, params: dict[str, Any]) -> str | None:
-        prog = _ack_program(str(params.get("command") or ""))
-        return self.vary(next((p for progs, p in _ACK_KINDS if prog in progs), self.acknowledgement))
-
-    async def run(self, params: dict[str, Any], ctx: ActionContext) -> ActionResult:
-        command = str(params.get("command", "")).strip()
+    async def run(self, args: dict[str, Any], ctx: Context) -> Result:
+        command = str(args.get("command", "")).strip()
         if not command:
-            return ActionResult.error("Commande vide.")
+            return Result.fail("Commande vide.")
 
-        speaker = ctx.utterance.speaker if ctx.utterance else None
+        speaker = ctx.speaker
         if reason := self.check(command):
-            return ActionResult.error(reason)
+            return Result.fail(reason)
         level = self.classify(command)
         if level != BENIGN and not self.is_allowed(speaker):
             who = speaker or "un locuteur non identifié"
-            return ActionResult.error(
+            return Result.fail(
                 f"Refusé : {who} n'est pas autorisé à exécuter cette commande ({level}) sur "
                 "cette machine ; seules les commandes en lecture seule lui sont permises."
             )
 
-        cwd = Path(str(params.get("cwd") or self.cwd)).expanduser()
+        cwd = Path(str(args.get("cwd") or self.cwd)).expanduser()
         if not cwd.is_dir():
-            return ActionResult.error(f"Répertoire introuvable : {cwd}")
+            return Result.fail(f"Répertoire introuvable : {cwd}")
         try:
-            timeout = float(params.get("timeout") or self.timeout)
+            timeout = float(args.get("timeout") or self.timeout)
         except (TypeError, ValueError):
-            return ActionResult.error(f"Délai invalide : {params.get('timeout')!r} (nombre de secondes attendu).")
+            return Result.fail(f"Délai invalide : {args.get('timeout')!r} (nombre de secondes attendu).")
         if not math.isfinite(timeout) or timeout <= 0:
             timeout = self.timeout
         timeout = min(timeout, self.max_timeout)
@@ -570,7 +518,7 @@ class Terminal(Action):
         if self.needs_confirmation(command, speaker):
             question = f"Exécuter la commande {level} « {command} » dans {cwd} ?"
             if not await ctx.confirm(question):
-                return ActionResult.error("L'utilisateur a refusé l'exécution de la commande.")
+                return Result.fail("L'utilisateur a refusé l'exécution de la commande.")
 
         return await self._execute(command, cwd, timeout, benign=level == BENIGN)
 
@@ -583,9 +531,9 @@ class Terminal(Action):
                        GIT_CONFIG_KEY_1="core.hooksPath", GIT_CONFIG_VALUE_1="/dev/null")
         return env
 
-    async def _execute(self, command: str, cwd: Path, timeout: float, benign: bool = False) -> ActionResult:
+    async def _execute(self, command: str, cwd: Path, timeout: float, benign: bool = False) -> Result:
         proc = await asyncio.create_subprocess_exec(
-            self.shell, "-c", command,
+            "/bin/bash", "-c", command,
             cwd=cwd, env=self._environment(benign),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
@@ -604,14 +552,14 @@ class Terminal(Action):
             if isinstance(e, asyncio.CancelledError):
                 raise
             partial = output.text(self.max_output_chars)
-            return ActionResult.error(f"Délai dépassé ({timeout:g} s) : commande interrompue."
+            return Result.fail(f"Délai dépassé ({timeout:g} s) : commande interrompue."
                                       + (f"\nSortie jusque-là :\n{partial}" if partial else ""))
 
         text = output.text(self.max_output_chars) or "(aucune sortie)"
         if too_big:
-            return ActionResult.error(f"Sortie trop volumineuse (plus de {self.max_read_bytes} octets) : "
+            return Result.fail(f"Sortie trop volumineuse (plus de {self.max_read_bytes} octets) : "
                                       f"commande interrompue.\n{text}")
-        return ActionResult(text=f"Code de sortie : {proc.returncode}\n{text}")
+        return Result(f"Code de sortie : {proc.returncode}\n{text}")
 
     @staticmethod
     async def _reap(proc: asyncio.subprocess.Process) -> None:

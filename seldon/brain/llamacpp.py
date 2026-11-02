@@ -1,21 +1,10 @@
-"""Cerveau local via un serveur llama.cpp (``llama serve`` / ``llama-server``).
+"""LLM local via un serveur llama.cpp (``llama serve``), API compatible OpenAI.
 
-Utilise l'API compatible OpenAI (``/v1/chat/completions``) avec appels d'outils.
-Si le serveur (local) ne répond pas au démarrage, ``server_command`` est lancé
-(par défaut ``./llama-serve.sh``) et Seldon attend que le modèle soit prêt.
-Le serveur lancé ainsi continue de tourner après l'arrêt de Seldon : un
-redémarrage ne recharge pas le modèle. Sa sortie va dans ``server_log``.
+Si le serveur ne répond pas au démarrage, ``server_command`` le lance (par
+défaut ``./llama-serve.sh``) et Seldon attend que le modèle soit chargé. Le
+serveur continue de tourner après l'arrêt de Seldon.
 
-Fonctionne aussi avec tout autre serveur compatible OpenAI (vLLM, LM Studio…).
-
-Latence :
-- la réponse est lue en flux (``stream``) : chaque phrase de l'appel ``speak``
-  est dite dès qu'elle est écrite, pendant que le modèle continue (voir
-  ``seldon.brain.speech``) ;
-- le prompt système et les outils ne changent pas d'un tour à l'autre et
-  l'historique n'est retouché que rarement (``seldon.brain.history``) : le
-  serveur réutilise le cache du préfixe et ne calcule que le nouveau message ;
-  ``warmup`` remplit ce cache dès le démarrage.
+Marche aussi avec tout serveur compatible OpenAI (Ollama, vLLM, LM Studio…).
 """
 
 from __future__ import annotations
@@ -24,367 +13,154 @@ import asyncio
 import base64
 import json
 import logging
+import os
+import re
 import shlex
 import subprocess
-import time
-from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 import httpx
 
-from seldon.brain import history
-from seldon.brain.base import ActionExecutor, Brain, ends_turn
-from seldon.core.action import Action
-from seldon.brain.prompts import (
-    LOCAL_RULES, STEP_LIMIT_REPLY, SYSTEM_PROMPT, bad_arguments, strip_thinking, thinking_in, tool_arguments,
-    user_message,
-)
-from seldon.brain.speech import SpeechStream
-from seldon.core import journal
-from seldon.core.errors import SeldonError, redact
-from seldon.core.registry import register
-from seldon.core.types import ActionResult, Utterance
+from seldon import journal
+from seldon.base import LLM, Result, Tool, ToolCall, turn_over
+from seldon.errors import SeldonError, redact
 
 log = logging.getLogger(__name__)
 
-CONNECT_TIMEOUT_S = 10   # serveur local : s'il ne répond pas vite, il est arrêté ou injoignable
-LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}   # seul un serveur sur cette machine est lancé par Seldon
+_THINK = re.compile(r"<think>(.*?)(</think>|$)", re.S)
+STEP_LIMIT = "Désolé, je n'ai pas réussi à terminer cette demande."
 
 
-def _http_error(response: httpx.Response, server: str = "serveur llama",
-                key_hint: str = "vérifiez brain.options.api_key") -> tuple[str, str | None]:
-    """Message (et piste) pour une erreur HTTP du serveur."""
-    try:
-        detail = response.json().get("error", {})
-        detail = detail.get("message", "") if isinstance(detail, dict) else str(detail)
-    except ValueError:
-        detail = response.text
-    detail = redact(" ".join(detail.split())[:300])
-    message = f"Le {server} a refusé la requête (HTTP {response.status_code}) : {detail}"
-    if "context" in detail.lower() and ("exceed" in detail.lower() or "size" in detail.lower()):
-        return message, "conversation trop longue pour le contexte du modèle : dites « nouvelle », ou lancez le serveur avec un -c plus grand"
-    if response.status_code in (401, 403):
-        return message, key_hint
-    if "tool" in detail.lower() or "jinja" in detail.lower():
-        return message, "le modèle doit gérer les appels d'outils : lancez `llama serve` avec --jinja"
-    return message, None
-
-
-class _NoStreaming(Exception):
-    """Le serveur refuse le flux avec des outils (ancienne version)."""
-
-
-@register("brain", "llamacpp")
-class LlamaCppBrain(Brain):
-    server = "serveur llama"                     # nom dans les messages d'erreur
-    key_hint = "vérifiez brain.options.api_key"   # piste pour une erreur 401/403
-    max_tokens_field = "max_tokens"             # OpenAI : max_completion_tokens
-
+class LlamaCpp(LLM):
     def __init__(
         self,
         base_url: str = "http://127.0.0.1:9931/v1",
-        model: str | None = None,           # None : premier modèle annoncé par /v1/models
-        api_key: str | None = None,
-        vision: bool = False,               # le modèle accepte-t-il des images ?
-        thinking: bool | None = False,      # raisonnement (Qwen3…) : False = réponses bien plus rapides
-        temperature: float | None = None,   # None : réglage du serveur
+        model: str | None = None,          # None : le modèle chargé sur le serveur
+        api_key_env: str | None = None,    # variable de .env contenant la clé (serveur distant)
+        vision: bool = False,              # le modèle lit-il les images (caméra) ?
+        thinking: bool = False,            # raisonnement du modèle : plus lent, parfois plus juste
+        temperature: float | None = None,  # None : réglage du serveur
         max_tokens: int = 4096,
-        max_steps: int = 10,
-        max_history_messages: int = 200,    # au-delà, les plus anciens échanges sont oubliés
-        max_history_chars: int = 40000,     # idem en taille ; les anciens résultats d'outils sont d'abord abrégés
-        keep_images: int = 1,               # captures gardées dans l'historique (les plus récentes)
-        stream: bool = True,                # dit chaque phrase de la réponse dès qu'elle est écrite
-        extra_instructions: str = "",
+        max_steps: int = 10,               # appels au modèle au plus par phrase
         timeout_s: float = 300,
-        server_command: str | None = "./llama-serve.sh",   # lancé si le serveur local ne répond pas ; null : jamais
-        server_log: str = "llama-serve.log",   # sortie du serveur lancé par Seldon
-        server_start_timeout_s: float = 600,   # attente du modèle (chargement, voire téléchargement)
+        server_command: str | None = "./llama-serve.sh",   # lancé si le serveur ne répond pas ; null : jamais
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        self.server_command = server_command
-        self.server_log = server_log
-        self.server_start_timeout_s = server_start_timeout_s
         self.model = model
-        self.api_key = api_key
+        self.api_key = os.environ.get(api_key_env) if api_key_env else None
         self.vision = vision
         self.thinking = thinking
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.max_steps = max_steps
-        self.max_history_messages = max_history_messages
-        self.max_history_chars = max_history_chars
-        self.keep_images = keep_images
-        self.stream = stream
-        self.system = SYSTEM_PROMPT + LOCAL_RULES + (f"\n{extra_instructions.strip()}\n" if extra_instructions else "")
         self.timeout_s = timeout_s
+        self.server_command = server_command
         self.client: httpx.AsyncClient | None = None
-        self.messages: list[dict[str, Any]] = []
+
+    # --- démarrage ----------------------------------------------------------------
 
     async def start(self) -> None:
-        if self.client is not None:
-            await self.client.aclose()
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        # Un seul client (connexion gardée ouverte) pour toutes les requêtes.
         self.client = httpx.AsyncClient(base_url=self.base_url, headers=headers,
-                                        timeout=httpx.Timeout(self.timeout_s, connect=min(CONNECT_TIMEOUT_S, self.timeout_s)))
+                                        timeout=httpx.Timeout(self.timeout_s, connect=10))
         try:
-            try:
-                response = await self.client.get("/models")
-            except httpx.ConnectError:
-                if not self._can_launch():
-                    raise
-                response = await self._launch_server()
-            models = response.raise_for_status().json()["data"]
-        except httpx.HTTPStatusError as e:
-            raise SeldonError(f"Le serveur {self.base_url} a répondu HTTP {e.response.status_code} à /models",
-                              "base_url doit pointer vers une API compatible OpenAI (se termine souvent par /v1)") from e
-        except httpx.HTTPError as e:
-            raise SeldonError(f"{self.server.capitalize()} injoignable ({self.base_url})",
-                              "lancez-le (`llama serve …`) ou corrigez brain.options.base_url") from e
-        except (ValueError, KeyError, TypeError) as e:
-            raise SeldonError(f"Réponse inattendue de {self.base_url}/models : ce n'est pas un serveur compatible OpenAI") from e
-        ids = [m["id"] for m in models]
-        if not ids:
-            raise SeldonError(f"Aucun modèle disponible sur le {self.server}", "lancez `llama serve` avec un modèle")
+            models = await self._models()
+        except httpx.ConnectError:
+            if not self.server_command:
+                raise SeldonError(f"Serveur llama injoignable ({self.base_url})", "lancez `llama serve`") from None
+            models = await self._launch_server()
         if self.model is None:
             loaded = [m["id"] for m in models if m.get("status", {}).get("value") == "loaded"]
-            self.model = (loaded or ids or [None])[0]
-        if self.model not in ids:
-            raise SeldonError(f"Modèle « {self.model} » absent du {self.server}",
-                              f"disponibles : {', '.join(ids)} (ou model: null pour le modèle chargé)")
-        log.info("Cerveau %s : %s", self.server, self.model)
+            self.model = (loaded or [m["id"] for m in models])[0]
+        log.info("Cerveau llama.cpp : %s", self.model)
 
-    def _can_launch(self) -> bool:
-        return bool(self.server_command) and urlsplit(self.base_url).hostname in LOCAL_HOSTS
+    async def _models(self) -> list[dict[str, Any]]:
+        response = await self.client.get("/models")
+        response.raise_for_status()
+        models = response.json()["data"]
+        if not models:
+            raise SeldonError("Aucun modèle sur le serveur llama", "lancez `llama serve` avec un modèle")
+        return models
 
-    async def _launch_server(self) -> httpx.Response:
-        """Lance ``server_command`` et attend que le serveur réponde à /models."""
-        log.info("%s arrêté : lancement de %s (sortie dans %s)", self.server.capitalize(), self.server_command, self.server_log)
-        try:
-            with open(self.server_log, "ab") as out:
-                # Nouvelle session : le serveur survit à l'arrêt de Seldon (et à Ctrl+C dans son terminal).
-                proc = subprocess.Popen(shlex.split(self.server_command), stdin=subprocess.DEVNULL, stdout=out,
-                                        stderr=subprocess.STDOUT, start_new_session=True)
-        except OSError as e:
-            raise SeldonError(f"Impossible de lancer le {self.server} ({self.server_command}) : {e.strerror or e}",
-                              "corrigez brain.options.server_command (chemin relatif au dossier de config.yaml)") from e
-        deadline = time.monotonic() + self.server_start_timeout_s
-        while True:
+    async def _launch_server(self) -> list[dict[str, Any]]:
+        log.info("Serveur llama arrêté : lancement de %s (sortie dans llama-serve.log)", self.server_command)
+        with open("llama-serve.log", "ab") as out:
+            # Nouvelle session : le serveur survit à l'arrêt de Seldon (pas de rechargement du modèle).
+            proc = subprocess.Popen(shlex.split(self.server_command), stdin=subprocess.DEVNULL,
+                                    stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+        for _ in range(600):   # chargement du modèle : jusqu'à 10 minutes
             await asyncio.sleep(1)
             if proc.poll() is not None:
-                raise SeldonError(f"Le {self.server} s'est arrêté au démarrage (code {proc.returncode}) : {self._log_tail()}",
-                                  f"voir {Path(self.server_log).resolve()}")
+                raise SeldonError(f"Le serveur llama s'est arrêté (code {proc.returncode})", "voir llama-serve.log")
             try:
-                response = await self.client.get("/models")
-            except httpx.HTTPError:
-                response = None
-            if response is not None and response.status_code != 503:   # 503 : modèle en cours de chargement
-                log.info("%s prêt", self.server.capitalize())
-                return response
-            if time.monotonic() > deadline:
-                raise SeldonError(f"Le {self.server} n'est pas prêt après {self.server_start_timeout_s:.0f} s",
-                                  f"il continue de démarrer ; voir {Path(self.server_log).resolve()}")
-
-    def _log_tail(self) -> str:
-        try:
-            lines = Path(self.server_log).read_text(encoding="utf-8", errors="replace").strip().splitlines()
-        except OSError:
-            return "sortie illisible"
-        return redact(" | ".join(lines[-3:])[-300:]) or "aucune sortie"
+                return await self._models()
+            except httpx.HTTPError:   # pas encore prêt (connexion refusée, 503 pendant le chargement)
+                continue
+        raise SeldonError("Le serveur llama n'est pas prêt après 10 minutes", "voir llama-serve.log")
 
     async def stop(self) -> None:
         if self.client is not None:
             await self.client.aclose()
 
-    def reset(self) -> None:
-        self.messages.clear()
+    # --- une phrase ------------------------------------------------------------------
 
-    @staticmethod
-    def _tools(actions: list[Action]) -> list[dict[str, Any]]:
-        # Même ordre et même contenu à chaque tour : le préfixe du prompt reste en cache côté serveur.
-        return [
-            {"type": "function", "function": {
-                "name": d["name"], "description": d["description"], "parameters": d["input_schema"]}}
-            for d in (a.tool_definition() for a in actions)
-        ]
+    async def run(self, system: str, messages: list[dict[str, str]], tools: list[Tool],
+                  call: ToolCall) -> str | None:
+        convo: list[dict[str, Any]] = [{"role": "system", "content": system}, *messages]
+        schemas = [{"type": "function", "function": t.schema()} for t in tools]
+        for step in range(self.max_steps):
+            msg = await self._chat(convo, schemas)
+            text, thought = _split_thinking(msg.get("content") or "")
+            journal.thought(msg.get("reasoning_content") or thought)
+            calls = msg.get("tool_calls") or []
+            if not calls:
+                return text or None
+            journal.thought(text)   # texte écrit avec des appels d'outils : jamais prononcé
+            convo.append({"role": "assistant", "content": text, "tool_calls": calls})
+            done, replies = [], []
+            for i, c in enumerate(calls):
+                c["id"] = c.get("id") or f"appel_{step}_{i}"
+                name = c["function"]["name"]
+                try:
+                    args = json.loads(c["function"].get("arguments") or "{}")
+                    result = await call(name, args) if isinstance(args, dict) else Result.fail("Arguments : objet JSON attendu.")
+                except json.JSONDecodeError:
+                    result = Result.fail("Arguments illisibles : JSON valide attendu.")
+                done.append((name, result))
+                replies.extend(self._tool_reply(c["id"], result))
+            # Les réponses « tool » doivent suivre l'appel sans interruption : les images après.
+            convo.extend(sorted(replies, key=lambda m: m["role"] != "tool"))
+            if turn_over(tools, done):
+                return None
+        log.warning("Nombre maximal d'étapes atteint (%d)", self.max_steps)
+        return STEP_LIMIT
 
-    def _tool_messages(self, call_id: str, result: ActionResult) -> list[dict[str, Any]]:
-        text = result.text or ("Erreur." if result.is_error else "OK.")
-        if result.is_error:
-            text = f"ERREUR : {text}"
-        if result.images and not self.vision:
-            text += f"\n({len(result.images)} image(s) obtenue(s), mais ce modèle ne peut pas les voir.)"
-        msgs = [{"role": "tool", "tool_call_id": call_id, "content": text}]
-        if result.images and self.vision:
-            # Les messages "tool" ne portent que du texte : les images suivent dans un message utilisateur.
-            msgs.append({"role": "user", "content": [
-                {"type": "text", "text": "Image(s) renvoyée(s) par l'outil :"},
-                *({"type": "image_url", "image_url": {
-                    "url": f"data:{img.media_type};base64,{base64.b64encode(img.data).decode('ascii')}"}}
-                  for img in result.images),
-            ]})
-        return msgs
-
-    def _body(self, tools: list[dict[str, Any]], messages: list[dict[str, Any]] | None = None,
-              max_tokens: int | None = None) -> dict[str, Any]:
-        body: dict[str, Any] = {
-            "model": self.model,
-            "messages": messages or [{"role": "system", "content": self.system}, *self.messages],
-            self.max_tokens_field: max_tokens or self.max_tokens,
-        }
-        if tools:
-            body["tools"] = tools
-        if self.thinking is not None:
-            body["chat_template_kwargs"] = {"enable_thinking": self.thinking}
+    async def _chat(self, convo: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+        body: dict[str, Any] = {"model": self.model, "messages": convo, "tools": tools, "max_tokens": self.max_tokens,
+                                "chat_template_kwargs": {"enable_thinking": self.thinking}}
         if self.temperature is not None:
             body["temperature"] = self.temperature
-        return body
-
-    async def _post(self, body: dict[str, Any]) -> dict[str, Any]:
         response = await self.client.post("/chat/completions", json=body)
         if response.is_error:
-            raise SeldonError(*_http_error(response, self.server, self.key_hint))
-        try:
-            return response.json()["choices"][0]["message"]
-        except (ValueError, KeyError, IndexError, TypeError) as e:
-            raise SeldonError(f"Réponse illisible du {self.server} : {response.text[:200]}") from e
+            raise SeldonError(f"Le serveur llama a refusé la requête (HTTP {response.status_code}) : "
+                              f"{redact(response.text[:300])}",
+                              "le modèle doit gérer les outils : lancez `llama serve` avec --jinja")
+        return response.json()["choices"][0]["message"]
 
-    async def _stream(self, body: dict[str, Any], speech: SpeechStream) -> dict[str, Any]:
-        """Lit la réponse en flux (SSE) ; les phrases du premier appel ``speak`` sont dites au fil de l'eau."""
-        content: list[str] = []
-        reasoning: list[str] = []
-        calls: dict[int, dict[str, Any]] = {}
-        async with self.client.stream("POST", "/chat/completions", json={**body, "stream": True}) as response:
-            if response.is_error:
-                await response.aread()
-                message, hint = _http_error(response, self.server, self.key_hint)
-                if "stream" in message.lower():
-                    raise _NoStreaming(message)
-                raise SeldonError(message, hint)
-            async for line in response.aiter_lines():
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data)
-                except ValueError as e:
-                    raise SeldonError(f"Réponse illisible du {self.server} : {data[:200]}") from e
-                if chunk.get("error"):
-                    error = chunk["error"]
-                    detail = error.get("message", "") if isinstance(error, dict) else str(error)
-                    raise SeldonError(f"Le {self.server} a signalé une erreur : {redact(detail[:300])}")
-                for choice in chunk.get("choices") or []:
-                    delta = choice.get("delta") or {}
-                    if delta.get("content"):
-                        content.append(delta["content"])
-                    if part := delta.get("reasoning_content") or delta.get("reasoning"):
-                        reasoning.append(part)
-                    for tc in delta.get("tool_calls") or []:
-                        call = calls.setdefault(tc.get("index", 0), {
-                            "id": "", "type": "function", "function": {"name": "", "arguments": ""}})
-                        call["id"] = tc.get("id") or call["id"]
-                        fn = tc.get("function") or {}
-                        call["function"]["name"] += fn.get("name") or ""
-                        call["function"]["arguments"] += fn.get("arguments") or ""
-                first = calls.get(0)
-                if first and first["function"]["name"] == speech.name and first["function"]["arguments"]:
-                    speech.feed(first["function"]["arguments"])
-                    if speech.stopped:
-                        break   # coupé : inutile de laisser le modèle finir (la connexion fermée l'arrête)
-        return {"role": "assistant", "content": "".join(content), "reasoning_content": "".join(reasoning),
-                "tool_calls": [calls[i] for i in sorted(calls)]}
+    def _tool_reply(self, call_id: str, result: Result) -> list[dict[str, Any]]:
+        text = ("ERREUR : " if result.error else "") + (result.text or "OK.")
+        if result.images and not self.vision:
+            text += "\n(Image obtenue, mais ce modèle ne peut pas la voir.)"
+        reply: list[dict[str, Any]] = [{"role": "tool", "tool_call_id": call_id, "content": text}]
+        if result.images and self.vision:   # un message « tool » ne porte que du texte : l'image suit
+            reply.append({"role": "user", "content": [{"type": "text", "text": "Image renvoyée par l'outil :"}, *(
+                {"type": "image_url", "image_url": {
+                    "url": f"data:{img.media_type};base64,{base64.b64encode(img.data).decode()}"}}
+                for img in result.images)]})
+        return reply
 
-    async def _chat(self, tools: list[dict[str, Any]], messages: list[dict[str, Any]] | None = None,
-                    speech: SpeechStream | None = None) -> dict[str, Any]:
-        body = self._body(tools, messages)
-        if speech is not None and self.stream:
-            try:
-                return await self._stream(body, speech)
-            except _NoStreaming as e:
-                log.warning("Réponse en flux refusée par le serveur (%s) : désactivée", e)
-                self.stream = False
-        return await self._post(body)
 
-    async def warmup(self, actions: list[Action]) -> None:
-        """Fait calculer au serveur le prompt système et les outils (gardés en cache) dès le démarrage."""
-        if self.client is None:
-            return
-        messages = [{"role": "system", "content": self.system}, {"role": "user", "content": "."}]
-        await self._post(self._body(self._tools(actions), messages, max_tokens=1))
-        log.debug("Cache du prompt préparé")
-
-    async def summarize(self, instructions: str, text: str) -> str | None:
-        if self.client is None:
-            return None
-        msg = await self._chat([], [{"role": "system", "content": instructions}, {"role": "user", "content": text}])
-        return strip_thinking(msg.get("content") or "") or None
-
-    async def handle(self, utterance: Utterance, actions: list[Action], execute: ActionExecutor) -> str | None:
-        assert self.client is not None, "start() n'a pas été appelé"
-        history.compact(self.messages, history.OPENAI, self.max_history_chars, self.max_history_messages)
-
-        snapshot = len(self.messages)
-        self.messages.append({"role": "user", "content": user_message(utterance)})
-        tools = self._tools(actions)
-        known = {a.name for a in actions}
-
-        try:
-            for step in range(self.max_steps):
-                speech = SpeechStream(execute) if self.stream and "speak" in known else None
-                try:
-                    msg = await self._chat(tools, speech=speech)
-                except asyncio.CancelledError:
-                    if speech is not None:
-                        speech.cancel()
-                    raise
-                except Exception:
-                    if speech is not None:   # la phrase en cours se termine, la suite est abandonnée
-                        speech.abort()
-                        await speech.close()
-                    raise
-                calls = [c for c in msg.get("tool_calls") or [] if isinstance(c, dict)]
-                if speech is not None and speech.stopped:
-                    calls = calls[:1]   # interrompu pendant la génération : les appels suivants sont incomplets
-                raw = msg.get("content") or ""
-                content = strip_thinking(raw)
-                journal.thought(msg.get("reasoning_content") or msg.get("reasoning") or thinking_in(raw))
-                if calls:
-                    journal.thought(content)   # texte écrit avec les appels d'outils : jamais prononcé
-                self.messages.append({"role": "assistant", "content": content, **({"tool_calls": calls} if calls else {})})
-                if not calls:
-                    return content or None
-
-                done, replies = [], []
-                for i, call in enumerate(calls):
-                    fn = call.setdefault("function", {})
-                    name = fn.get("name") or ""
-                    call["id"] = call.get("id") or f"call_{step}_{i}"
-                    params = tool_arguments(fn.get("arguments"))
-                    if i == 0 and speech is not None and speech.started:
-                        result = await speech.finish(params.get("text") if params else None)
-                        if speech.stopped or params is None:   # l'historique garde ce qui a été dit
-                            fn["arguments"] = json.dumps({"text": speech.spoken_text}, ensure_ascii=False)
-                        if speech.stopped:   # coupé : les appels suivants ignoraient l'interruption
-                            del calls[1:]
-                    elif name not in known:
-                        result = ActionResult.error(f"Outil inconnu « {name} ». Outils disponibles : {', '.join(sorted(known))}.")
-                    elif params is None:
-                        result = ActionResult.error(bad_arguments(fn.get("arguments")))
-                    else:
-                        result = await execute(name, params)
-                    replies.extend(self._tool_messages(call["id"], result))
-                    done.append((name, result))
-                # Réponses « tool » d'abord, images ensuite : OpenAI exige qu'elles suivent l'appel sans interruption.
-                self.messages.extend(sorted(replies, key=lambda m: m["role"] != "tool"))
-                if any(r.images for _, r in done):
-                    history.drop_old_images(self.messages, history.OPENAI, self.keep_images)
-                if ends_turn(actions, done):
-                    return None
-            log.warning("Nombre maximal d'étapes atteint (%d)", self.max_steps)
-            return STEP_LIMIT_REPLY
-        except BaseException:
-            del self.messages[snapshot:]
-            raise
+def _split_thinking(content: str) -> tuple[str, str]:
+    """Sépare la réponse du raisonnement ``<think>…</think>`` que certains modèles écrivent."""
+    thought = " ".join(m.group(1).strip() for m in _THINK.finditer(content))
+    return _THINK.sub("", content).strip(), thought

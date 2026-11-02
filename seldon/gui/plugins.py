@@ -1,9 +1,10 @@
-"""Découverte des plugins par analyse statique (AST), sans les importer.
+"""Options des plugins, lues dans leur code source (AST) sans les importer.
 
-Importer un plugin peut charger torch, whisper ou opencv : l'interface lit donc
-le code source pour trouver les classes ``@register("catégorie", "nom")`` et les
-paramètres de leur ``__init__`` (valeur par défaut, annotation, commentaire de
-fin de ligne). Ces informations alimentent les listes de moteurs et d'options.
+Importer un plugin peut charger torch, whisper ou opencv : l'interface prend la
+liste des plugins dans ``seldon.registry.PLUGINS`` (« module:Classe »), ouvre le
+fichier du module et lit les paramètres de l'``__init__`` de la classe (valeur
+par défaut, annotation, commentaire de fin de ligne). Une classe sans
+``__init__`` hérite de celui d'une classe parente du même module.
 """
 
 from __future__ import annotations
@@ -14,6 +15,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from seldon.registry import PLUGINS
+
+PACKAGE = Path(__file__).resolve().parent.parent   # le paquet ``seldon``
 MISSING = object()
 
 
@@ -26,36 +30,29 @@ class Param:
     comment: str = ""
 
     def hint(self) -> str:
-        parts = []
-        if self.annotation:
-            parts.append(self.annotation)
-        if self.default_src:
-            parts.append(f"défaut : {self.default_src}")
-        if self.comment:
-            parts.append(self.comment)
-        return " — ".join(parts)
+        parts = [self.annotation, f"défaut : {self.default_src}" if self.default_src else "", self.comment]
+        return " — ".join(p for p in parts if p)
 
 
 @dataclass
 class PluginInfo:
     category: str
     name: str
-    path: Path
+    path: Path | None           # fichier du module ; None : plugin hors du paquet seldon
     doc: str = ""
     params: dict[str, Param] = field(default_factory=dict)
 
 
-def _register_args(deco: ast.expr) -> tuple[str, str] | None:
-    if not isinstance(deco, ast.Call) or len(deco.args) != 2:
+def module_file(module: str, root: Path = PACKAGE) -> Path | None:
+    """Fichier d'un module ``seldon.x.y`` (``x/y.py`` ou ``x/y/__init__.py`` sous ``root``)."""
+    head, _, rest = module.partition(".")
+    if head != "seldon" or not rest:
         return None
-    func = deco.func
-    fname = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
-    if fname != "register":
-        return None
-    a, b = deco.args
-    if isinstance(a, ast.Constant) and isinstance(b, ast.Constant) and isinstance(a.value, str) and isinstance(b.value, str):
-        return a.value, b.value
-    return None
+    base = root.joinpath(*rest.split("."))
+    for path in (base.with_suffix(".py"), base / "__init__.py"):
+        if path.is_file():
+            return path
+    return base.with_suffix(".py")   # pas encore écrit : le bouton ✎ sera grisé
 
 
 def _line_comment(lines: list[str], lineno: int) -> str:
@@ -85,59 +82,49 @@ def _params(init: ast.FunctionDef, lines: list[str]) -> dict[str, Param]:
     return out
 
 
-def _parse(path: Path, needle: str = "") -> tuple[str, ast.Module] | None:
-    """Source et arbre d'un fichier ; ``None`` s'il est illisible, invalide ou sans ``needle``."""
+def _parse(path: Path) -> tuple[list[str], ast.Module] | None:
+    """Lignes et arbre d'un fichier ; ``None`` s'il est absent, illisible ou invalide."""
     try:
         source = path.read_text(encoding="utf-8")
-        if needle not in source:   # filtre textuel : la plupart des fichiers ne sont pas analysés
-            return None
-        return source, ast.parse(source)
+        return source.splitlines(), ast.parse(source)
     except (OSError, UnicodeDecodeError, SyntaxError, ValueError, MemoryError, RecursionError):
         return None   # ValueError : octet nul dans la source
 
 
-def scan_file(path: Path) -> list[PluginInfo]:
-    if (parsed := _parse(path, "register")) is None:
-        return []
-    source, tree = parsed
-    lines = source.splitlines()
-    found = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.ClassDef):
-            continue
-        for deco in node.decorator_list:
-            reg = _register_args(deco)
-            if reg is None:
-                continue
-            doc = (ast.get_docstring(node) or ast.get_docstring(tree) or "").strip()
-            init = next((n for n in node.body if isinstance(n, ast.FunctionDef) and n.name == "__init__"), None)
-            found.append(PluginInfo(reg[0], reg[1], path, doc.split("\n\n")[0].replace("\n", " ").replace("``", ""),
-                                    _params(init, lines) if init else {}))
-    return found
+def class_info(path: Path, class_name: str) -> tuple[str, dict[str, Param]]:
+    """Description (1er paragraphe de la docstring) et paramètres de ``__init__`` d'une classe.
+
+    Sans ``__init__`` ni docstring propres, ceux d'une classe parente définie dans le même fichier.
+    """
+    if (parsed := _parse(path)) is None:
+        return "", {}
+    lines, tree = parsed
+    classes = {n.name: n for n in tree.body if isinstance(n, ast.ClassDef)}
+    doc, params, seen = "", None, set()
+    node = classes.get(class_name)
+    while node is not None and node.name not in seen:
+        seen.add(node.name)
+        doc = doc or (ast.get_docstring(node) or "").strip()
+        init = next((n for n in node.body if isinstance(n, ast.FunctionDef) and n.name == "__init__"), None)
+        if params is None and init is not None:
+            params = _params(init, lines)
+        if doc and params is not None:
+            break
+        node = next((classes[b.id] for b in node.bases if isinstance(b, ast.Name) and b.id in classes), None)
+    doc = doc or (ast.get_docstring(tree) or "").strip()
+    return doc.split("\n\n")[0].replace("\n", " ").replace("``", ""), params or {}
 
 
-def discover(package_dir: str | Path | None = None) -> dict[str, dict[str, PluginInfo]]:
-    """Plugins du paquet seldon : ``{catégorie: {nom: PluginInfo}}``."""
-    root = Path(package_dir) if package_dir else Path(__file__).resolve().parent.parent
+def discover(root: Path = PACKAGE, table: dict[str, dict[str, str]] | None = None) -> dict[str, dict[str, PluginInfo]]:
+    """Plugins du registre : ``{catégorie: {nom: PluginInfo}}`` (rien n'est importé)."""
     out: dict[str, dict[str, PluginInfo]] = {}
-    for path in sorted(root.rglob("*.py")):
-        if "gui" in path.relative_to(root).parts:
-            continue
-        for info in scan_file(path):
-            out.setdefault(info.category, {})[info.name] = info
+    for category, names in (PLUGINS if table is None else table).items():
+        for name, target in names.items():
+            module, _, cls = target.partition(":")
+            path = module_file(module, root)
+            doc, params = class_info(path, cls) if path else ("", {})
+            out.setdefault(category, {})[name] = PluginInfo(category, name, path, doc, params)
     return out
-
-
-def class_params(path: str | Path, class_name: str) -> dict[str, Param]:
-    """Paramètres de ``__init__`` d'une classe quelconque (ex. ConversationMemory)."""
-    if (parsed := _parse(Path(path), class_name)) is None:
-        return {}
-    source, tree = parsed
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name == class_name:
-            init = next((n for n in node.body if isinstance(n, ast.FunctionDef) and n.name == "__init__"), None)
-            return _params(init, source.splitlines()) if init else {}
-    return {}
 
 
 _IDENT = r"[A-Za-z_][\w.\-]*"

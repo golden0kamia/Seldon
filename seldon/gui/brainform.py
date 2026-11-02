@@ -8,9 +8,10 @@ config.yaml affiche sa valeur par défaut et n'est écrite que si on la change.
 Changer de moteur met de côté les options du précédent (retrouvées si on y
 revient) : on peut comparer plusieurs moteurs sans tout ressaisir.
 
-Les clés API (Anthropic, OpenAI) ne vont jamais dans config.yaml : elles sont
-écrites dans le fichier ``.env`` voisin (droits 600). Claude avec
-``auth: abonnement`` n'a pas de clé : le compte est celui de Claude Code
+Les clés API ne vont jamais dans config.yaml : elles sont écrites dans le
+fichier ``.env`` voisin (droits 600) — ``ANTHROPIC_API_KEY`` pour Claude, la
+variable nommée par ``api_key_env`` pour un serveur llama.cpp distant. Claude
+avec ``auth: abonnement`` n'a pas de clé : le compte est celui de Claude Code
 (``claude auth login``), vérifié par le bouton « Lister ».
 """
 
@@ -40,16 +41,13 @@ from seldon.gui.widgets import FIXED_CHOICES, guard_wheel, hint_label, make_edit
 
 ENGINE_LABELS = {
     "llamacpp": "llama.cpp — serveur local",
-    "ollama": "Ollama — local",
     "claude": "Claude — Anthropic, en ligne",
-    "openai": "OpenAI — GPT, en ligne",
 }
-ENV_KEYS = {"claude": "ANTHROPIC_API_KEY", "openai": "OPENAI_API_KEY"}   # clé lue dans .env
-CONNECTION = {"llamacpp": ("base_url", "api_key"), "ollama": ("host",), "openai": ("base_url",),
-              "claude": ("auth", "claude_bin")}
+ENV_KEYS = {"claude": "ANTHROPIC_API_KEY"}   # clé lue dans .env
+CONNECTION = {"llamacpp": ("base_url", "api_key_env", "server_command"), "claude": ("auth",)}
 # auth: abonnement — pas de liste de modèles sans clé API : ceux de la famille actuelle
 ACCOUNT_MODELS = ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"]
-MAIN = ("effort", "reasoning_effort", "thinking", "think", "vision", "temperature", "stream", "extra_instructions")
+MAIN = ("effort", "thinking", "vision", "temperature")
 MODEL_PLACEHOLDER = {"llamacpp": "modèle chargé sur le serveur"}
 WARNING = "⚠"
 
@@ -92,9 +90,8 @@ def write_env(path: Path, key: str, value: str) -> None:
 
 
 def api_key(engine: str, options: dict[str, Any], env_path: Path) -> str | None:
-    if options.get("api_key"):
-        return str(options["api_key"])
-    name = ENV_KEYS.get(engine)
+    """Clé API du moteur, lue dans l'environnement ou le fichier .env (jamais dans config.yaml)."""
+    name = ENV_KEYS.get(engine) or options.get("api_key_env")
     return (os.environ.get(name) or read_env(env_path).get(name)) if name else None
 
 
@@ -102,9 +99,9 @@ def uses_account(engine: str, options: dict[str, Any]) -> bool:
     return engine == "claude" and options.get("auth") == "abonnement"
 
 
-def account_status(claude_bin: str | None) -> str:
+def account_status() -> str:
     """Compte claude.ai auquel Claude Code est connecté (``claude auth status``) ; ValueError sinon."""
-    path = shutil.which(claude_bin or "claude")
+    path = shutil.which("claude")
     if path is None:
         raise ValueError("Claude Code (commande claude) introuvable")
     out = subprocess.run([path, "auth", "status"], capture_output=True, text=True, timeout=20,
@@ -127,7 +124,7 @@ def list_models(engine: str, options: dict[str, Any], defaults: dict[str, Any], 
     opt = {**defaults, **{k: v for k, v in options.items() if v is not None}}
     key = api_key(engine, options, env_path)
     if uses_account(engine, opt):
-        account_status(opt.get("claude_bin"))
+        account_status()
         return list(ACCOUNT_MODELS)
     if engine == "claude":
         if not key:
@@ -136,21 +133,12 @@ def list_models(engine: str, options: dict[str, Any], defaults: dict[str, Any], 
                       headers={"x-api-key": key, "anthropic-version": "2023-06-01"})
         r.raise_for_status()
         return [m["id"] for m in r.json()["data"]]
-    if engine == "ollama":
-        host = opt.get("host") or os.environ.get("OLLAMA_HOST") or "http://localhost:11434"
-        host = host if "://" in host else f"http://{host}"
-        r = httpx.get(f"{host.rstrip('/')}/api/tags", timeout=10)
-        r.raise_for_status()
-        return sorted(m["name"] for m in r.json()["models"])
     if "base_url" not in opt:
         raise ValueError("ce moteur ne sait pas lister ses modèles")
-    if engine == "openai" and not key:
-        raise ValueError("clé API OpenAI absente")
     r = httpx.get(f"{str(opt['base_url']).rstrip('/')}/models", timeout=10,
                   headers={"Authorization": f"Bearer {key}"} if key else {})
     r.raise_for_status()
-    ids = [m["id"] for m in r.json()["data"]]
-    return ids if engine != "openai" else sorted(i for i in ids if i.startswith(("gpt", "o", "chatgpt")))
+    return [m["id"] for m in r.json()["data"]]
 
 
 def _error_text(e: BaseException) -> str:
@@ -484,7 +472,7 @@ class BackupEditor(QWidget):
                 self.node["backup"] = self.saved
             else:
                 current = str(self.node.get("engine", ""))
-                engine = next((e for e in ("openai", "claude", *sorted(self.plugins)) if e != current), current)
+                engine = next((e for e in ("claude", *sorted(self.plugins)) if e != current), current)
                 self.node["backup"] = CommentedMap(engine=engine, options=CommentedMap())
             self._show()
         else:
