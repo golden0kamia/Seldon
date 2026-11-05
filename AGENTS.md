@@ -43,3 +43,5 @@ The pipeline gathers all of these into one tool list (`tools = [...]` in `Seldon
 
 - Ask question to precise the construction
 - Use agent to delegate work
+- Update CLAUDE.md based on user requests
+- Use and update MEMORY.md
