@@ -76,6 +76,12 @@ tools:                    # outils en Python (seldon/tools)
       apps: [files, notes, calendar, tasks, contacts]
       notes_folder: Notes   # dossier de l'application Notes
       # NEXTCLOUD_HOST, NEXTCLOUD_USERNAME, NEXTCLOUD_PASSWORD dans le fichier .env
+  - engine: web           # recherche sur internet et lecture de pages, par Firefox sans fenêtre (Playwright)
+    options:
+      browser: firefox    # firefox | chromium | webkit (installer : playwright install firefox)
+      search_engine: duckduckgo   # duckduckgo | searxng (avec searxng_url)
+      max_page_chars: 6000  # texte renvoyé par page lue (la suite à la demande)
+      allow_private: false  # true : le navigateur peut joindre le réseau local
 
 mcp:                      # serveurs MCP : un outil par serveur (seldon/mcp.py)
   - engine: home_assistant   # domotique via le serveur MCP de Home Assistant

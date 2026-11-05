@@ -13,7 +13,7 @@ micro ─► oreille : STT (faster-whisper) + identification de la voix (Resembl
    speak      tools (Python)   serveurs MCP   plugins de Seldon   skills
  (répondre)   terminal,        Home Assistant conversations,      consignes lues
      │        caméra, musique,                voix                 à la demande
-     ▼        PC, Nextcloud
+     ▼        PC, Nextcloud, web
   voix : TTS (Piper) ─► haut-parleur
 ```
 
@@ -21,7 +21,7 @@ Le cerveau ne répond que par des outils ; même la réponse en est un (`speak`)
 Tous les outils lui arrivent en une seule liste, quelle que soit leur origine :
 
 - **tools** (`tools:`) : code Python qui agit directement (terminal, caméra,
-  musique, PC, Nextcloud) ;
+  musique, PC, Nextcloud, recherche web) ;
 - **MCP** (`mcp:`) : serveurs MCP externes, un outil par serveur ;
 - **plugins de Seldon** : la mémoire (`memory:`) apporte l'outil `conversations`,
   l'identification des voix (`speakers:`) l'outil `voix`. Désactiver le plugin
@@ -52,7 +52,7 @@ seldon/
     llamacpp.py  LLM local (API compatible OpenAI) : boucle outils ↔ modèle
     claude.py    LLM Claude (clé API ou abonnement claude.ai)
     memory.py    conversations sauvegardées + outil « conversations »
-  tools/         speak, terminal, camera, feishin, desktop, nextcloud
+  tools/         speak, terminal, camera, feishin, desktop, nextcloud, web
   mcp.py         client MCP : un outil par serveur
   skills.py      outil « skill »
   cli/enroll.py  enregistrer une voix au micro
@@ -229,6 +229,25 @@ L'outil `nextcloud` parle à Nextcloud en WebDAV : fichiers, notes (dossier
 les applications proposées, `calendars` et `default_calendar` les agendas.
 Supprimer, déplacer ou écraser demande une confirmation ; `confirm_writes: true`
 la demande pour toute écriture.
+
+### Recherche sur internet
+
+L'outil `web` cherche sur internet et lit des pages avec un vrai navigateur :
+Firefox sans fenêtre, piloté par Playwright (`browser` : `firefox`, `chromium`
+ou `webkit`), JavaScript compris. `search` interroge DuckDuckGo, ou une instance
+SearXNG (`search_engine: searxng`, `searxng_url`, format `json` activé dans ses
+réglages) ; `open` renvoie le texte principal d'une page, `max_page_chars`
+caractères à la fois, la suite à la demande. Installation :
+`.venv/bin/pip install -e '.[web]'` puis `.venv/bin/playwright install firefox`.
+
+Chaque page s'ouvre dans un contexte neuf (ni cookies ni historique), sans
+images ni vidéos. Seules les adresses `http` / `https` publiques sont permises :
+le réseau local (`localhost`, `192.168.…`, Home Assistant…) est bloqué,
+redirections et requêtes des pages comprises, sauf `allow_private: true`
+(l'instance SearXNG configurée reste joignable). Les téléchargements sont
+refusés ; le texte des pages est une donnée, pas une consigne. Les recherches
+partent vers le moteur choisi : une instance SearXNG chez soi évite de les
+confier à un tiers.
 
 ## Serveurs MCP
 

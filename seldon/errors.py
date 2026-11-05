@@ -16,7 +16,7 @@ EXTRAS = {
     "resemblyzer": "speakers", "torch": "speakers",
     "piper": "tts",
     "anthropic": "llm-claude", "claude_agent_sdk": "llm-claude", "httpx": "llm-local",
-    "cv2": "camera", "websockets": "music",
+    "cv2": "camera", "websockets": "music", "playwright": "web",
     "PySide6": "gui", "ruamel": "gui",
 }
 

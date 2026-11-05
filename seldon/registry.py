@@ -42,6 +42,7 @@ PLUGINS: dict[str, dict[str, str]] = {
         "feishin": "seldon.tools.feishin:Feishin",
         "desktop": "seldon.tools.desktop:Desktop",
         "nextcloud": "seldon.tools.nextcloud:Nextcloud",
+        "web": "seldon.tools.web:Web",
     },
     "mcp": {
         "http": "seldon.mcp:MCPServer",
