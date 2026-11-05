@@ -23,14 +23,7 @@ speakers:                 # qui parle ; outil « voix » : apprend les voix inco
     max_samples: 40       # échantillons gardés par voix (les plus récents)
 
 brain:                    # cerveau : le LLM qui choisit les outils
-  engine: llamacpp        # serveur local `llama serve` (llama.cpp). Autre : claude
-  options:
-    base_url: http://127.0.0.1:9931/v1
-    server_command: ./llama-serve.sh   # lancé si le serveur ne répond pas ; null : jamais
-    model: null           # null = modèle chargé sur le serveur
-    vision: true          # true si le modèle lit les images (caméra)
-    thinking: false       # raisonnement du modèle : plus lent, parfois plus juste
-    max_steps: 10
+  engine: llamacpp        # serveur local `llama serve` (llama.cpp), options par défaut. Autre : claude
   backup:                 # LLM de secours si le principal échoue (même format)
     engine: claude
     options:
