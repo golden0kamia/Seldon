@@ -137,7 +137,8 @@ seldon-gui                            # ou : python -m seldon.gui [-c config.yam
 - **▤ Journal** (Ctrl+3) : lancer Seldon (F5, ou Ctrl+F5 en mode texte),
   l'arrêter (Maj+F5) ou le redémarrer. La conversation ressort en gras
   (« Bastien › … », « Seldon › … »), les réflexions du modèle en italique, les
-  appels d'outils au niveau DEBUG. Une confirmation s'affiche dans un bandeau
+  appels d'outils au niveau DEBUG. Les longues lignes passent à la ligne à la
+  largeur de la fenêtre, sans défilement horizontal. Une confirmation s'affiche dans un bandeau
   **Oui** / **Non** ; seules les questions de Seldon sont reconnues (jeton
   secret `SELDON_GUI_TOKEN` à chaque lancement).
 - **◈ Structure** (Ctrl+4) : schéma des sous-systèmes et de leurs moteurs ; un

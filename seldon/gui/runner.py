@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPalette, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QColor, QFont, QPalette, QTextCharFormat, QTextCursor, QTextOption
 from PySide6.QtWidgets import (
     QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QSizePolicy, QVBoxLayout,
     QWidget,
@@ -142,7 +142,9 @@ class RunnerPanel(QWidget):
         self.log.setMaximumBlockCount(MAX_LINES)
         self.log.setUndoRedoEnabled(False)   # sinon chaque ligne reçue resterait dans l'historique d'annulation
         self.log.setFont(theme.mono_font(10.5))
-        self.log.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        # retour à la ligne à la largeur du journal, même au milieu d'un mot trop long (URL, chemin) : pas de défilement horizontal
+        self.log.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.log.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
         self.log.setFrameShape(QFrame.Shape.NoFrame)
         self.log.setPlaceholderText("Seldon est arrêté.\n\n▶ Lancer (F5) : mode vocal complet\n"
                                     "▶ Mode texte (Ctrl+F5) : clavier et console\n\nSes messages s'afficheront ici.")
