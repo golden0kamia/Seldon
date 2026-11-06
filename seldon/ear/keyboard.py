@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import threading
 from typing import AsyncIterator
@@ -13,6 +14,33 @@ from typing import AsyncIterator
 from seldon.base import STT, Utterance
 
 _stdin = threading.Lock()   # une seule lecture du clavier à la fois (phrase ou confirmation)
+_pending = bytearray()      # octets lus après la dernière ligne rendue
+
+
+def _read_raw_line(prompt: str) -> str | None:
+    """Une ligne de l'entrée standard, ``None`` en fin d'entrée.
+
+    ``os.read`` sur le descripteur plutôt que ``input()`` : un thread démon bloqué
+    dans ``input()`` garde le verrou du tampon de ``sys.stdin``, et l'arrêt de
+    l'interpréteur échoue alors (« could not acquire lock … at interpreter shutdown »).
+    """
+    if prompt:
+        sys.stdout.write(prompt)
+        sys.stdout.flush()
+    fd = sys.stdin.fileno()
+    while b"\n" not in _pending:
+        chunk = os.read(fd, 4096)
+        if not chunk:   # fin d'entrée : dernière ligne sans retour à la ligne, puis plus rien
+            if not _pending:
+                return None
+            line = bytes(_pending)
+            _pending.clear()
+            return line.decode("utf-8", "replace").rstrip("\r")
+        _pending.extend(chunk)
+    end = _pending.index(b"\n")
+    line = bytes(_pending[:end])
+    del _pending[:end + 1]
+    return line.decode("utf-8", "replace").rstrip("\r")
 
 
 async def read_line(prompt: str = "") -> str:
@@ -31,8 +59,8 @@ async def read_line(prompt: str = "") -> str:
     def read() -> None:
         with _stdin:
             try:
-                line = input(prompt)
-            except (EOFError, OSError, ValueError):
+                line = _read_raw_line(prompt)
+            except (OSError, ValueError):
                 line = None
             try:
                 loop.call_soon_threadsafe(deliver, line)
