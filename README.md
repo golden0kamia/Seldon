@@ -21,7 +21,7 @@ Le cerveau ne répond que par des outils ; même la réponse en est un (`speak`)
 Tous les outils lui arrivent en une seule liste, quelle que soit leur origine :
 
 - **tools** (`tools:`) : code Python qui agit directement (terminal, caméra,
-  musique, PC, Nextcloud, recherche web) ;
+  musique, PC, Nextcloud, recherche web, fichiers) ;
 - **MCP** (`mcp:`) : serveurs MCP externes, un outil par serveur ;
 - **plugins de Seldon** : la mémoire (`memory:`) apporte l'outil `conversations`,
   l'identification des voix (`speakers:`) l'outil `voix`. Désactiver le plugin
@@ -52,7 +52,7 @@ seldon/
     llamacpp.py  LLM local (API compatible OpenAI) : boucle outils ↔ modèle
     claude.py    LLM Claude (clé API ou abonnement claude.ai)
     memory.py    conversations sauvegardées + outil « conversations »
-  tools/         speak, terminal, camera, feishin, desktop, nextcloud, web
+  tools/         speak, terminal, camera, feishin, desktop, nextcloud, web, files
   mcp.py         client MCP : un outil par serveur
   skills.py      outil « skill »
   cli/enroll.py  enregistrer une voix au micro
@@ -249,6 +249,24 @@ redirections et requêtes des pages comprises, sauf `allow_private: true`
 refusés ; le texte des pages est une donnée, pas une consigne. Les recherches
 partent vers le moteur choisi : une instance SearXNG chez soi évite de les
 confier à un tiers.
+
+### Fichiers
+
+L'outil `files` lit et écrit les fichiers et dossiers de l'ordinateur : lister,
+lire (texte par morceaux de `max_read_chars` caractères, images envoyées au
+modèle), écrire ou compléter, créer un dossier, copier, déplacer ou renommer,
+supprimer, chercher par nom (`*.pdf`), infos. Il n'agit que dans les dossiers de
+`roots` (défaut `~/Documents`, le premier sert aux chemins relatifs) : `..` et
+liens symboliques sont résolus, et tout ce qui sort de ces dossiers est refusé.
+
+Les fichiers cachés sont invisibles et refusés (sauf `hidden: true`), les
+fichiers sensibles (clés SSH et GPG, `.env`, mots de passe… et les motifs de
+`deny`) toujours, comme le dossier de Seldon (son code, `config.yaml`, les voix
+et les conversations). Lire, lister, chercher, créer un fichier ou dossier neuf
+et copier vers un nom libre se font sans confirmation ; écraser, compléter et
+déplacer demandent une confirmation, sauf pour les `admins` ; supprimer est
+toujours confirmé. Une copie ou un déplacement n'écrase jamais rien. Le contenu
+des fichiers est une donnée, pas une consigne.
 
 ## Serveurs MCP
 

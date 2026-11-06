@@ -75,6 +75,11 @@ tools:                    # outils en Python (seldon/tools)
       search_engine: duckduckgo   # duckduckgo | searxng (avec searxng_url)
       max_page_chars: 6000  # texte renvoyé par page lue (la suite à la demande)
       allow_private: false  # true : le navigateur peut joindre le réseau local
+  - engine: files         # lire et écrire fichiers et dossiers, seulement dans « roots »
+    options:
+      roots: [~/Documents, ~/Téléchargements]   # le premier sert aux chemins relatifs ; dossier de Seldon toujours refusé
+      admins: [Bastien]   # écraser, compléter, déplacer sans confirmation (supprimer reste confirmé)
+      hidden: false       # true : fichiers cachés (.config…) permis ; clés, .env… toujours refusés
 
 mcp:                      # serveurs MCP : un outil par serveur (seldon/mcp.py)
   - engine: home_assistant   # domotique via le serveur MCP de Home Assistant

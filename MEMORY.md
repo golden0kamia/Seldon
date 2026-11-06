@@ -1,0 +1,1 @@
+- Outil `files` (2026-11-06) : choix de Bastien — accès limité aux dossiers de `roots` (pas tout le dossier perso), confirmation seulement pour écraser / compléter / déplacer (sauf admins) et toujours pour supprimer. Le dossier de Seldon reste interdit pour que le cerveau ne puisse pas modifier `config.yaml` ni son code.

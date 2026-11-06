@@ -43,6 +43,7 @@ PLUGINS: dict[str, dict[str, str]] = {
         "desktop": "seldon.tools.desktop:Desktop",
         "nextcloud": "seldon.tools.nextcloud:Nextcloud",
         "web": "seldon.tools.web:Web",
+        "files": "seldon.tools.files:Files",
     },
     "mcp": {
         "http": "seldon.mcp:MCPServer",
